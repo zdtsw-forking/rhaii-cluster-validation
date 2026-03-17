@@ -80,7 +80,7 @@ func BuildJobSpec(name, node, namespace, image string, role Role, podCfg *PodCon
 					},
 					Containers:         []corev1.Container{container},
 					RestartPolicy:      corev1.RestartPolicyNever,
-					ServiceAccountName: "rhaii-validate-agent",
+					ServiceAccountName: "rhaii-validator",
 				},
 			},
 		},

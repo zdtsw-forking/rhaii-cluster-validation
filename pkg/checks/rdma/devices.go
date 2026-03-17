@@ -10,6 +10,13 @@ import (
 	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/checks"
 )
 
+// hostExec runs a command on the host filesystem via chroot /host.
+func hostExec(ctx context.Context, name string, args ...string) ([]byte, error) {
+	chrootArgs := []string{"/host", name}
+	chrootArgs = append(chrootArgs, args...)
+	return exec.CommandContext(ctx, "chroot", chrootArgs...).Output()
+}
+
 // DevicesCheck validates RDMA device presence and accessibility.
 type DevicesCheck struct {
 	nodeName string
@@ -37,16 +44,22 @@ func (c *DevicesCheck) Run(ctx context.Context) checks.Result {
 		return r
 	}
 
-	// Use ibv_devices for vendor-neutral RDMA device discovery
-	output, err := exec.CommandContext(ctx, "ibv_devices").Output()
+	// Try ibv_devices first, fall back to sysfs
+	output, err := hostExec(ctx, "ibv_devices")
+	var devices []string
 	if err != nil {
-		r.Status = checks.StatusFail
-		r.Message = fmt.Sprintf("ibv_devices failed: %v", err)
-		r.Remediation = "Install rdma-core / libibverbs-utils"
-		return r
+		// Fallback: discover from sysfs
+		sysOutput, sysErr := hostExec(ctx, "ls", "/sys/class/infiniband/")
+		if sysErr != nil {
+			r.Status = checks.StatusFail
+			r.Message = fmt.Sprintf("ibv_devices failed: %v; sysfs fallback also failed", err)
+			r.Remediation = "Check RDMA device plugin and network operator installation"
+			return r
+		}
+		devices = strings.Fields(strings.TrimSpace(string(sysOutput)))
+	} else {
+		devices = parseIBVDevices(string(output))
 	}
-
-	devices := parseIBVDevices(string(output))
 	if len(devices) == 0 {
 		r.Status = checks.StatusFail
 		r.Message = "No RDMA devices found via ibv_devices"

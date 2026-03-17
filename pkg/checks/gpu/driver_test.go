@@ -39,10 +39,9 @@ func TestParseDriverOutput(t *testing.T) {
 	}{
 		{
 			name:  "single GPU",
-			input: "535.129.03, 12.2, NVIDIA A100-SXM4-80GB, 81920",
+			input: "535.129.03, NVIDIA A100-SXM4-80GB, 81920",
 			want: &driverInfo{
 				DriverVersion: "535.129.03",
-				CUDAVersion:   "12.2",
 				GPUName:       "NVIDIA A100-SXM4-80GB",
 				MemoryTotal:   "81920",
 				GPUCount:      1,
@@ -50,13 +49,12 @@ func TestParseDriverOutput(t *testing.T) {
 		},
 		{
 			name: "multiple GPUs",
-			input: `535.129.03, 12.2, NVIDIA A100-SXM4-80GB, 81920
-535.129.03, 12.2, NVIDIA A100-SXM4-80GB, 81920
-535.129.03, 12.2, NVIDIA A100-SXM4-80GB, 81920
-535.129.03, 12.2, NVIDIA A100-SXM4-80GB, 81920`,
+			input: `535.129.03, NVIDIA A100-SXM4-80GB, 81920
+535.129.03, NVIDIA A100-SXM4-80GB, 81920
+535.129.03, NVIDIA A100-SXM4-80GB, 81920
+535.129.03, NVIDIA A100-SXM4-80GB, 81920`,
 			want: &driverInfo{
 				DriverVersion: "535.129.03",
-				CUDAVersion:   "12.2",
 				GPUName:       "NVIDIA A100-SXM4-80GB",
 				MemoryTotal:   "81920",
 				GPUCount:      4,
@@ -64,10 +62,9 @@ func TestParseDriverOutput(t *testing.T) {
 		},
 		{
 			name:  "H100 GPU",
-			input: "550.54.15, 12.4, NVIDIA H100 80GB HBM3, 81559",
+			input: "550.54.15, NVIDIA H100 80GB HBM3, 81559",
 			want: &driverInfo{
 				DriverVersion: "550.54.15",
-				CUDAVersion:   "12.4",
 				GPUName:       "NVIDIA H100 80GB HBM3",
 				MemoryTotal:   "81559",
 				GPUCount:      1,
@@ -104,9 +101,6 @@ func TestParseDriverOutput(t *testing.T) {
 			}
 			if got.DriverVersion != tt.want.DriverVersion {
 				t.Errorf("DriverVersion = %q, want %q", got.DriverVersion, tt.want.DriverVersion)
-			}
-			if got.CUDAVersion != tt.want.CUDAVersion {
-				t.Errorf("CUDAVersion = %q, want %q", got.CUDAVersion, tt.want.CUDAVersion)
 			}
 			if got.GPUName != tt.want.GPUName {
 				t.Errorf("GPUName = %q, want %q", got.GPUName, tt.want.GPUName)

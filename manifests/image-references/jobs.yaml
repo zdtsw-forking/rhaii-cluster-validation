@@ -1,0 +1,19 @@
+# ============================================================================
+# PRODUCTION IMAGE CONFIGURATION - EMBEDDED IN BINARY
+# ============================================================================
+# This file defines container images for multi-node test jobs.
+# It is embedded in the binary at build time via //go:embed
+#
+# USAGE: Edit this file and rebuild binary to change job images
+# DOCUMENTATION: See README.md in this directory
+# ============================================================================
+
+# Default image for all jobs (when job-specific image not set)
+images:
+  default: "ghcr.io/llm-d/llm-d-rdma-tools-dev:latest"
+
+  # Per-job image overrides (empty string = use default)
+  jobs:
+    iperf3: ""  # TCP bandwidth testing
+    rdma: ""    # RDMA bandwidth testing (ib_write_bw)
+    nccl: ""    # NCCL all-reduce testing (future)

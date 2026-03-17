@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/checks"
@@ -29,9 +28,9 @@ func (c *ECCCheck) Run(ctx context.Context) checks.Result {
 		Name:     c.Name(),
 	}
 
-	output, err := exec.CommandContext(ctx, "nvidia-smi",
+	output, err := hostExec(ctx, "nvidia-smi",
 		"--query-gpu=index,ecc.errors.uncorrected.volatile.total",
-		"--format=csv,noheader,nounits").Output()
+		"--format=csv,noheader,nounits")
 	if err != nil {
 		r.Status = checks.StatusSkip
 		r.Message = fmt.Sprintf("nvidia-smi ECC query failed: %v", err)

@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: rhaii-validate-agent
+  name: rhaii-validator
   namespace: rhaii-validation
   labels:
-    app: rhaii-validate-agent
+    app: rhaii-validator
 spec:
   selector:
     matchLabels:
-      app: rhaii-validate-agent
+      app: rhaii-validator
   template:
     metadata:
       labels:
-        app: rhaii-validate-agent
+        app: rhaii-validator
     spec:
       nodeSelector:
         nvidia.com/gpu.present: "true"
@@ -21,6 +21,7 @@ spec:
       containers:
         - name: agent
           image: ${IMG}
+          imagePullPolicy: Always
           args:
             - run
             - --node-name
@@ -40,24 +41,22 @@ spec:
                   fieldPath: metadata.namespace
           securityContext:
             privileged: true
-          # No GPU resource request — agent only queries nvidia-smi,
-          # doesn't run CUDA workloads. Privileged mode provides access.
           volumeMounts:
-            - name: nvidia
-              mountPath: /usr/bin/nvidia-smi
-              subPath: nvidia-smi
+            - name: host-root
+              mountPath: /host
               readOnly: true
             - name: config
               mountPath: /etc/rhaii-validate
               readOnly: true
+      hostPID: true
       volumes:
-        - name: nvidia
+        - name: host-root
           hostPath:
-            path: /usr/bin
+            path: /
             type: Directory
         - name: config
           configMap:
             name: rhaii-validate-config
             optional: true  # Agent falls back to embedded defaults if missing
       restartPolicy: Always
-      serviceAccountName: rhaii-validate-agent
+      serviceAccountName: rhaii-validator

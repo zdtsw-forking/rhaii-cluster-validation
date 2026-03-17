@@ -1,6 +1,11 @@
 package jobrunner
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/checks"
+	batchv1 "k8s.io/api/batch/v1"
+)
 
 func TestToResourceRequirementsValid(t *testing.T) {
 	pc := &PodConfig{
@@ -70,5 +75,156 @@ func TestToResourceRequirementsInvalid(t *testing.T) {
 				t.Fatal("expected error for invalid resource value")
 			}
 		})
+	}
+}
+
+// MockJobWithCustomImages implements both Job and ImageConfigurable
+type MockJobWithCustomImages struct {
+	serverImg string
+	clientImg string
+}
+
+func (m *MockJobWithCustomImages) Name() string { return "mock-custom-img" }
+func (m *MockJobWithCustomImages) GetServerImage() string { return m.serverImg }
+func (m *MockJobWithCustomImages) GetClientImage() string { return m.clientImg }
+func (m *MockJobWithCustomImages) ServerSpec(node, namespace, image string) (*batchv1.Job, error) {
+	return BuildJobSpec(m.Name(), node, namespace, image, RoleServer, nil, []string{"echo", image})
+}
+func (m *MockJobWithCustomImages) ClientSpec(node, namespace, image, serverIP string) (*batchv1.Job, error) {
+	return BuildJobSpec(m.Name(), node, namespace, image, RoleClient, nil, []string{"echo", image})
+}
+func (m *MockJobWithCustomImages) ParseResult(logs string) (*JobResult, error) {
+	return &JobResult{Status: checks.StatusPass}, nil
+}
+
+// MockJobNoCustomImages implements only Job interface (not ImageConfigurable)
+type MockJobNoCustomImages struct{}
+
+func (m *MockJobNoCustomImages) Name() string { return "mock-default-img" }
+func (m *MockJobNoCustomImages) ServerSpec(node, namespace, image string) (*batchv1.Job, error) {
+	return BuildJobSpec(m.Name(), node, namespace, image, RoleServer, nil, []string{"echo", image})
+}
+func (m *MockJobNoCustomImages) ClientSpec(node, namespace, image, serverIP string) (*batchv1.Job, error) {
+	return BuildJobSpec(m.Name(), node, namespace, image, RoleClient, nil, []string{"echo", image})
+}
+func (m *MockJobNoCustomImages) ParseResult(logs string) (*JobResult, error) {
+	return &JobResult{Status: checks.StatusPass}, nil
+}
+
+func TestImageConfigurable(t *testing.T) {
+	tests := []struct {
+		name                string
+		job                 Job
+		wantServerImage     string
+		wantClientImage     string
+		implementsInterface bool
+	}{
+		{
+			name: "job with custom images",
+			job: &MockJobWithCustomImages{
+				serverImg: "custom-server:v1",
+				clientImg: "custom-client:v2",
+			},
+			wantServerImage:     "custom-server:v1",
+			wantClientImage:     "custom-client:v2",
+			implementsInterface: true,
+		},
+		{
+			name: "job with same custom image",
+			job: &MockJobWithCustomImages{
+				serverImg: "same-img:latest",
+				clientImg: "same-img:latest",
+			},
+			wantServerImage:     "same-img:latest",
+			wantClientImage:     "same-img:latest",
+			implementsInterface: true,
+		},
+		{
+			name: "job with empty server image (fallback)",
+			job: &MockJobWithCustomImages{
+				serverImg: "",
+				clientImg: "client-only:v1",
+			},
+			wantServerImage:     "",
+			wantClientImage:     "client-only:v1",
+			implementsInterface: true,
+		},
+		{
+			name:                "job without ImageConfigurable",
+			job:                 &MockJobNoCustomImages{},
+			wantServerImage:     "",
+			wantClientImage:     "",
+			implementsInterface: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test interface implementation
+			imgConfig, ok := tt.job.(ImageConfigurable)
+			if ok != tt.implementsInterface {
+				t.Errorf("ImageConfigurable check = %v, want %v", ok, tt.implementsInterface)
+			}
+
+			if tt.implementsInterface {
+				if got := imgConfig.GetServerImage(); got != tt.wantServerImage {
+					t.Errorf("GetServerImage() = %q, want %q", got, tt.wantServerImage)
+				}
+				if got := imgConfig.GetClientImage(); got != tt.wantClientImage {
+					t.Errorf("GetClientImage() = %q, want %q", got, tt.wantClientImage)
+				}
+			}
+		})
+	}
+}
+
+func TestJobSpecWithCustomImage(t *testing.T) {
+	job := &MockJobWithCustomImages{
+		serverImg: "my-server:v1",
+		clientImg: "my-client:v2",
+	}
+
+	// Test server spec receives custom image
+	serverJob, err := job.ServerSpec("node1", "test-ns", "my-server:v1")
+	if err != nil {
+		t.Fatalf("ServerSpec failed: %v", err)
+	}
+	if serverJob.Spec.Template.Spec.Containers[0].Image != "my-server:v1" {
+		t.Errorf("Server container image = %q, want %q",
+			serverJob.Spec.Template.Spec.Containers[0].Image, "my-server:v1")
+	}
+
+	// Test client spec receives custom image
+	clientJob, err := job.ClientSpec("node2", "test-ns", "my-client:v2", "10.0.0.1")
+	if err != nil {
+		t.Fatalf("ClientSpec failed: %v", err)
+	}
+	if clientJob.Spec.Template.Spec.Containers[0].Image != "my-client:v2" {
+		t.Errorf("Client container image = %q, want %q",
+			clientJob.Spec.Template.Spec.Containers[0].Image, "my-client:v2")
+	}
+}
+
+func TestJobSpecWithDefaultImage(t *testing.T) {
+	job := &MockJobNoCustomImages{}
+
+	// Test server spec with default image
+	serverJob, err := job.ServerSpec("node1", "test-ns", "default:latest")
+	if err != nil {
+		t.Fatalf("ServerSpec failed: %v", err)
+	}
+	if serverJob.Spec.Template.Spec.Containers[0].Image != "default:latest" {
+		t.Errorf("Server container image = %q, want %q",
+			serverJob.Spec.Template.Spec.Containers[0].Image, "default:latest")
+	}
+
+	// Test client spec with default image
+	clientJob, err := job.ClientSpec("node2", "test-ns", "default:latest", "10.0.0.1")
+	if err != nil {
+		t.Fatalf("ClientSpec failed: %v", err)
+	}
+	if clientJob.Spec.Template.Spec.Containers[0].Image != "default:latest" {
+		t.Errorf("Client container image = %q, want %q",
+			clientJob.Spec.Template.Spec.Containers[0].Image, "default:latest")
 	}
 }

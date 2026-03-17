@@ -10,42 +10,50 @@ import (
 
 // DetectPlatform auto-detects the cloud platform from node labels and provider IDs.
 func DetectPlatform(ctx context.Context, client kubernetes.Interface) Platform {
-	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{Limit: 1})
+	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil || len(nodes.Items) == 0 {
 		return PlatformUnknown
 	}
 
-	node := nodes.Items[0]
-	labels := node.Labels
-	providerID := node.Spec.ProviderID
+	// Check all nodes — first node might be a master without platform labels.
+	// OCP checked first: OpenShift can run on AWS/Azure, so label-based detection
+	// must precede provider-ID-based detection to avoid misclassification.
+	for _, node := range nodes.Items {
+		labels := node.Labels
 
-	// AKS: provider ID starts with "azure://" or has Azure-specific labels
-	if strings.HasPrefix(providerID, "azure://") {
-		return PlatformAKS
-	}
-	if _, ok := labels["kubernetes.azure.com/cluster"]; ok {
-		return PlatformAKS
-	}
+		// OCP (check first — OCP can run on AWS/Azure)
+		if _, ok := labels["node.openshift.io/os_id"]; ok {
+			return PlatformOCP
+		}
 
-	// EKS: provider ID starts with "aws://" or has EKS-specific labels
-	if strings.HasPrefix(providerID, "aws://") {
-		return PlatformEKS
-	}
-	if _, ok := labels["eks.amazonaws.com/nodegroup"]; ok {
-		return PlatformEKS
-	}
-
-	// CoreWeave: has CoreWeave-specific labels
-	if _, ok := labels["coreweave.cloud/instance-type"]; ok {
-		return PlatformCoreWeave
-	}
-	if strings.Contains(providerID, "coreweave") {
-		return PlatformCoreWeave
+		// CoreWeave
+		for key := range labels {
+			if strings.Contains(key, "coreweave") {
+				return PlatformCoreWeave
+			}
+		}
 	}
 
-	// OCP: has OpenShift-specific labels
-	if _, ok := labels["node.openshift.io/os_id"]; ok {
-		return PlatformOCP
+	// Cloud providers (by provider ID — only if no platform-specific labels found)
+	for _, node := range nodes.Items {
+		providerID := node.Spec.ProviderID
+		labels := node.Labels
+
+		// AKS
+		if strings.HasPrefix(providerID, "azure://") {
+			return PlatformAKS
+		}
+		if _, ok := labels["kubernetes.azure.com/cluster"]; ok {
+			return PlatformAKS
+		}
+
+		// EKS
+		if strings.HasPrefix(providerID, "aws://") {
+			return PlatformEKS
+		}
+		if _, ok := labels["eks.amazonaws.com/nodegroup"]; ok {
+			return PlatformEKS
+		}
 	}
 
 	return PlatformUnknown

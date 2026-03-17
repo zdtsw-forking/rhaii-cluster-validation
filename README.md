@@ -1,290 +1,374 @@
-# RHAII Cluster Validation Agent
+# RHAII Cluster Validation
 
-Hardware validation tool for GPU, RDMA, and network checks on Kubernetes clusters. Validates cluster readiness for llm-d / RHAII inference workloads.
-
-Two modes:
-- **`run`** — Agent mode: runs hardware checks on the current node
-- **`deploy`** — Controller mode: deploys agents to all GPU nodes, collects results, prints report
-
-## What It Checks
-
-### Per-Node Checks (DaemonSet agent — no GPU request needed)
-
-| Category | Check | Tool |
-|---|---|---|
-| GPU | Driver version, CUDA version | nvidia-smi |
-| GPU | ECC memory errors | nvidia-smi |
-| RDMA | Device presence and accessibility | ibv_devices, /dev/infiniband |
-| RDMA | NIC link state and speed | ibstat |
-
-### Cross-Node Bandwidth Tests (Jobs — auto when 2+ GPU nodes, requests all available GPUs)
-
-| Category | Check | Tool |
-|---|---|---|
-| Networking | TCP bandwidth | iperf3 |
-| Networking | RDMA bandwidth | ib_write_bw |
+kubectl plugin for validating GPU cluster readiness for AI/ML workloads.
 
 ## Quick Start
 
-### Build
+### Option 1: kubectl Plugin (Recommended)
 
 ```bash
-make build
+# Build and install
+make install
+
+# Run GPU checks
+kubectl rhaii-validate gpu
+
+# Run bandwidth tests
+kubectl rhaii-validate networking
+
+# Run everything
+kubectl rhaii-validate all
+
+# Debug mode (keeps pods alive for inspection)
+kubectl rhaii-validate gpu --debug
+
+# JSON output
+kubectl rhaii-validate gpu -o json
+
+# Cleanup
+kubectl rhaii-validate clean
 ```
 
-### Run locally (no GPU expected, checks fail gracefully)
+### Option 2: Container Image (No Install)
 
 ```bash
-make run-local
+IMG=quay.io/opendatahub/rhaii-validator:latest
+
+# Run GPU checks
+podman run --rm -it \
+  -v ~/.kube/config:/kubeconfig:z \
+  -e KUBECONFIG=/kubeconfig \
+  $IMG gpu
+
+# Run bandwidth tests
+podman run --rm -it \
+  -v ~/.kube/config:/kubeconfig:z \
+  -e KUBECONFIG=/kubeconfig \
+  $IMG networking
+
+# Run everything
+podman run --rm -it \
+  -v ~/.kube/config:/kubeconfig:z \
+  -e KUBECONFIG=/kubeconfig \
+  $IMG all
+
+# Cleanup
+podman run --rm -it \
+  -v ~/.kube/config:/kubeconfig:z \
+  -e KUBECONFIG=/kubeconfig \
+  $IMG clean
 ```
 
-### Deploy to cluster
-
-Build and push the container image first:
+### Option 3: Download Binary
 
 ```bash
-make container IMG=quay.io/{user}/rhaii-validate-agent:dev
-make push IMG=quay.io/{user}/rhaii-validate-agent:dev
+# Download latest release
+curl -L https://github.com/opendatahub-io/rhaii-cluster-validation/releases/latest/download/kubectl-rhaii_validate-linux-amd64 -o kubectl-rhaii_validate
+chmod +x kubectl-rhaii_validate
+sudo mv kubectl-rhaii_validate /usr/local/bin/
+
+# Run
+kubectl rhaii-validate all
 ```
 
-**Workflow 1: make deploy (recommended)**
-
-Single command — builds binary, creates RBAC, deploys agents, collects results, prints report, cleans up:
+## Build and Push
 
 ```bash
-make deploy IMG=quay.io/{user}/rhaii-validate-agent:dev
+# Build and push container image
+make container
+make push
+
+# Build binary + install kubectl plugin + run validation
+make deploy
 ```
 
-With specific server/client topology for bandwidth jobs:
+## How Each Check Works
 
+### GPU Driver Version
+
+Runs `nvidia-smi` (or `rocm-smi` for AMD) on the host via `chroot /host`:
+
+```
+chroot /host nvidia-smi --query-gpu=driver_version,name,memory.total --format=csv,noheader,nounits
+```
+
+Output:
+```
+580.126.09, NVIDIA A100 80GB PCIe, 81920
+580.126.09, NVIDIA A100 80GB PCIe, 81920
+```
+
+Parses driver version and compares against `min_driver_version` from platform config.
+
+PASS: `NVIDIA driver: 580.126.09, GPU: NVIDIA A100 80GB PCIe (81920 MiB), 2 GPU(s)`
+FAIL: `Driver version 530.0 is below minimum 535.0`
+
+### GPU ECC Errors
+
+Queries uncorrectable (hardware) ECC errors per GPU:
+
+```
+chroot /host nvidia-smi --query-gpu=index,ecc.errors.uncorrected.volatile.total --format=csv,noheader,nounits
+```
+
+Output:
+```
+0, 0
+1, 0
+```
+
+Each row = one GPU. If error count > 0, that GPU has memory corruption.
+
+PASS: `No uncorrectable ECC errors on 2 GPU(s)`
+FAIL: `Uncorrectable ECC errors found: GPU 1: 3 uncorrectable errors`
+Remediation: Replace GPU or contact cloud provider
+
+### GPU-NIC Topology
+
+Discovers which RDMA NIC is closest to which GPU based on NUMA affinity:
+
+```
+# GPU NUMA node
+chroot /host cat /sys/class/nvidia/nvidia0/numa_node
+# → 0
+
+# NIC NUMA node
+chroot /host cat /sys/class/infiniband/mlx5_0/device/numa_node
+# → 0
+
+# Same NUMA = optimal path (GPU0 ↔ mlx5_0)
+```
+
+On bare metal (8 GPUs, 8 NICs):
+```
+GPU0↔mlx5_0(NUMA0), GPU1↔mlx5_1(NUMA0), GPU2↔mlx5_2(NUMA0), GPU3↔mlx5_3(NUMA0)
+GPU4↔mlx5_4(NUMA1), GPU5↔mlx5_5(NUMA1), GPU6↔mlx5_6(NUMA1), GPU7↔mlx5_7(NUMA1)
+```
+
+On VMs (NUMA hidden):
+```
+GPU0↔mlx5_0(NUMA-1), GPU1↔mlx5_0(NUMA-1)
+```
+
+The controller uses this mapping to set `-d mlx5_X --use_cuda Y` on RDMA bandwidth jobs.
+
+### RDMA Devices
+
+Checks RDMA device presence. Tries `ibv_devices` on host, falls back to sysfs:
+
+```
+# Primary: ibv_devices
+chroot /host ibv_devices
+
+# Fallback: sysfs
+chroot /host ls /sys/class/infiniband/
+# → mlx5_0
+```
+
+PASS: `1 RDMA device(s) found: mlx5_0`
+FAIL: `No RDMA devices found`
+
+### RDMA NIC Status
+
+Checks RDMA NIC link state and speed. Tries `ibstat` on host, falls back to sysfs:
+
+```
+# Primary: ibstat (shows Active/Down, link speed)
+chroot /host ibstat
+
+# Fallback: sysfs device listing
+chroot /host ls /sys/class/infiniband/
+```
+
+PASS: `2 active RDMA NIC(s): mlx5_0 (200 Gbps), mlx5_1 (200 Gbps)`
+WARN: `ibstat not available on host, 1 RDMA device(s) found via sysfs: mlx5_0`
+FAIL: `RDMA NIC(s) down: mlx5_1`
+
+Why WARN on AKS: `ibstat` (from `infiniband-diags` package) is not installed on AKS VM hosts.
+The check falls back to sysfs which confirms the device exists but cannot verify link state or speed.
+This is expected on AKS — not a problem. On bare metal (OCP/CoreWeave) where `ibstat` is installed, it shows PASS with full details.
+
+### TCP Bandwidth (iperf3)
+
+Runs iperf3 server/client jobs between node pairs using ring topology:
+
+```
+# Server pod on node-1
+iperf3 -s
+
+# Client pod on node-2
+iperf3 -c <server-pod-ip> -t 10 -J
+```
+
+Parses JSON output for `end.sum_sent.bits_per_second`, converts to Gbps.
+Compares against `thresholds.tcp_bandwidth_gbps` from platform config.
+
+PASS: `TCP bandwidth: 94.5 Gbps (threshold: 25 Gbps)`
+WARN: `TCP bandwidth: 15.0 Gbps (below 25 Gbps threshold)`
+FAIL: `TCP bandwidth: 7.6 Gbps (well below 25 Gbps threshold)`
+
+Image: `ghcr.io/llm-d/llm-d-rdma-tools-dev:latest` (from `manifests/image-references/jobs.yaml`)
+
+### RDMA Bandwidth (ib_write_bw)
+
+Runs RDMA write bandwidth test per GPU-NIC pair. Uses topology to set the right device and GPU:
+
+```
+# Server pod on node-1
+ib_write_bw --duration 10 -d mlx5_0 --use_cuda 0
+
+# Client pod on node-2
+ib_write_bw --duration 10 -d mlx5_0 --use_cuda 0 <server-pod-ip>
+```
+
+On a node with 8 GPUs and 8 NICs, this creates 8 separate jobs:
+```
+ib-write-bw-mlx5-0: -d mlx5_0 --use_cuda 0
+ib-write-bw-mlx5-1: -d mlx5_1 --use_cuda 1
+...
+ib-write-bw-mlx5-7: -d mlx5_7 --use_cuda 7
+```
+
+Parses `BW average [MB/sec]` from output, converts to Gbps.
+Compares against `thresholds.rdma_bandwidth_pd_gbps` from platform config.
+
+PASS: `RDMA bandwidth: 195.2 Gbps (threshold: 180 Gbps)`
+FAIL: `RDMA bandwidth: 50.1 Gbps (well below 180 Gbps threshold)`
+
+Image: `ghcr.io/llm-d/llm-d-rdma-tools-dev:latest` (from `manifests/image-references/jobs.yaml`)
+
+## Ring Topology
+
+By default, bandwidth tests use ring topology so every node is tested as both sender and receiver:
+
+```
+8 nodes:
+  Round 1: node-2 → node-1 (iperf3 + RDMA per NIC)
+  Round 2: node-3 → node-2
+  Round 3: node-4 → node-3
+  ...
+  Round 8: node-1 → node-8
+```
+
+Override with star topology:
 ```bash
-./bin/rhaii-validate-agent deploy --image <img> \
-  --server-node gpu-node-0 --client-nodes gpu-node-1,gpu-node-2
+kubectl rhaii-validate networking --server-node node-1
 ```
 
-Multi-node bandwidth jobs (iperf3, ib_write_bw) run automatically when 2+ GPU nodes exist. GPU resources are auto-detected.
-
-**Workflow 2: Makefile manual (for debugging)**
-
-```bash
-kubectl apply -f deploy/rbac.yaml                          # Create RBAC first
-make run IMG=quay.io/{user}/rhaii-validate-agent:dev        # Deploy DaemonSet only
-make logs                                                   # Manually read pod logs
-make clean                                                  # Manually cleanup DaemonSet
-```
-
-## CLI Usage
-
-### Version
-
-```bash
-rhaii-validate-agent --version
-```
-
-### Agent mode — run checks on current node
-
-```bash
-rhaii-validate-agent run                                     # Auto-detect node name
-rhaii-validate-agent run --no-wait                           # Exit after checks (for local/CI)
-rhaii-validate-agent run --bandwidth --iperf-server <ip>     # + TCP bandwidth test (standalone)
-rhaii-validate-agent run --config config.yaml                # Override platform defaults
-```
-
-Without `--no-wait`, the agent blocks after completing checks (required for DaemonSet — keeps the container alive so the controller can collect logs). With `--no-wait`, the agent exits immediately and returns non-zero if any check failed.
-
-### Controller mode — deploy agents, collect results, print report
-
-```bash
-rhaii-validate-agent deploy --image <img>                    # Full lifecycle
-rhaii-validate-agent deploy --image <img> --server-node <node>  # Specific server node
-rhaii-validate-agent deploy --image <img> --client-nodes <n1,n2>  # Specific clients
-rhaii-validate-agent deploy --image <img> --namespace my-ns --timeout 10m
-rhaii-validate-agent deploy --image <img> --config config.yaml
-```
-
-The `deploy` command:
-1. Cleans up any previous DaemonSet
-2. Ensures namespace and RBAC exist
-3. Detects the cloud platform (AKS/EKS/CoreWeave/OCP) from node labels
-4. Creates a ConfigMap with detected platform defaults (preserved across runs)
-5. Discovers GPU nodes and deploys agent DaemonSet
-6. Waits for agents to set `validation-status: done` annotation
-7. Collects JSON results from pod logs
-8. If `--bandwidth`: runs bandwidth jobs (iperf3/RDMA) between GPU nodes
-   - Auto-detects GPU resource name (`nvidia.com/gpu` or `amd.com/gpu`) and count
-   - Jobs request all available GPUs for exclusive access
-   - Default: first GPU node as server, rest as clients
-9. Cleans up DaemonSet and RBAC (ConfigMap preserved for reuse)
-10. Prints consolidated report — exits non-zero if any check reported FAIL
-
-## GPU Resource Handling
-
-| Workload | GPU Request | Why |
-|---|---|---|
-| DaemonSet agent | None | Only queries nvidia-smi in privileged mode |
-| Bandwidth/NCCL jobs | All available GPUs | Auto-detected from `node.Status.Allocatable`, requests all for exclusive access |
-
-The controller scans nodes for `nvidia.com/gpu` or `amd.com/gpu` extended resources and automatically sets resource requests/limits on job pods. No manual configuration needed.
-
-## Exit Codes
-
-| Code | Meaning |
-|---|---|
-| 0 | All checks passed (or passed with warnings) |
-| 1 | One or more checks reported FAIL |
-
-Both `run --no-wait` and `deploy` exit non-zero on failures, allowing CI/CD pipelines to gate on results.
-
-## Pod Annotation Status Tracking
-
-The agent updates its own pod's annotation `rhaii.opendatahub.io/validation-status`:
-
-```
-starting  →  running  →  done    (checks completed successfully)
-                      →  error   (agent itself failed)
-```
-
-The controller waits for all agent pods to reach `done` or `error` before collecting logs. The agent blocks after setting the annotation so the container stays alive for log collection.
-
-## Output
-
-### Agent mode — JSON to stdout
-
-```json
-{
-  "node": "aks-gpuh100-vmss000000",
-  "timestamp": "2026-03-12T14:30:00Z",
-  "results": [
-    {
-      "category": "gpu_hardware",
-      "name": "gpu_driver_version",
-      "status": "PASS",
-      "message": "NVIDIA driver: 535.129.03, CUDA: 12.2, GPU: NVIDIA H100 80GB (81920 MiB), 8 GPU(s)"
-    }
-  ]
-}
-```
-
-### Controller mode — table report
+## Report
 
 ```
 === Validation Report ===
 Platform: AKS
 
-GROUP                CHECK                          NODE                                STATUS   MESSAGE
-----------------------------------------------------------------------------------------------------------------------------------
-gpu_hardware         gpu_driver_version             aks-gpuh100-vmss000000              PASS     NVIDIA driver: 535.129.03
-gpu_hardware         gpu_ecc_status                 aks-gpuh100-vmss000000              PASS     No uncorrectable ECC errors
-networking_rdma      rdma_devices_detected           aks-gpuh100-vmss000000              PASS     4 RDMA device(s) found
-bandwidth            iperf3-tcp                     aks-gpuh100-vmss000001              PASS     TCP bandwidth: 98.5 Gbps (threshold: 25 Gbps)
+GPU-NIC Topology:
+  gpu-node-0: GPU0↔mlx5_0(NUMA0), GPU1↔mlx5_1(NUMA0)
+  gpu-node-1: GPU0↔mlx5_0(NUMA0), GPU1↔mlx5_1(NUMA0)
 
-Summary: 4 PASS | 0 WARN | 0 FAIL | 0 SKIP
+GROUP                CHECK                NODE            STATUS   MESSAGE
+---------------------------------------------------------------------------
+gpu_hardware         gpu_driver_version   gpu-node-0      PASS     NVIDIA driver: 580.126.09
+gpu_hardware         gpu_ecc_status       gpu-node-0      PASS     No uncorrectable ECC errors
+topology             gpu_nic_topology     gpu-node-0      PASS     2 GPU(s), 1 NIC(s)
+networking_rdma      rdma_devices_detected gpu-node-0     PASS     1 RDMA device(s) found
+bandwidth            iperf3-tcp           node1 → node0   PASS     TCP: 94.5 Gbps
+bandwidth            ib-write-bw-mlx5-0   node1 → node0   PASS     RDMA GPU0: 195.2 Gbps
+
+Summary: 6 PASS | 0 WARN | 0 FAIL | 0 SKIP
 Status:  READY
+
+Report:
+  kubectl get cm rhaii-validate-report -n rhaii-validation -o jsonpath='{.data.report\.json}' | jq .
 ```
 
-## Platform Configuration
+## Cluster Prerequisites
 
-### Config Persistence
+### Required
 
-ConfigMap `rhaii-validate-config` is **preserved across runs**. Edit and rerun without losing customizations:
+| Requirement | Why | Verified Platforms |
+|-------------|-----|-------------------|
+| GPU nodes with NVIDIA or AMD GPUs | GPU driver, ECC, topology checks | AKS, OCP, CoreWeave |
+| GPU driver installed on nodes | `nvidia-smi` / `rocm-smi` must work on host | All |
+| `nvidia.com/gpu` or `amd.com/gpu` in node allocatable | Auto-discovers GPU nodes | All |
+| Cluster-admin or namespace-admin RBAC | Creates namespace, RBAC, DaemonSet, Jobs | All |
 
-```bash
-# First run creates ConfigMap with detected defaults
-make deploy IMG=<img>
+### Required for Networking Tests
 
-# Edit config
-kubectl edit configmap rhaii-validate-config -n rhaii-validation
+| Requirement | Why |
+|-------------|-----|
+| 2+ GPU nodes | Ring topology needs at least 2 nodes |
+| Job container image pullable | `ghcr.io/llm-d/llm-d-rdma-tools-dev:latest` by default |
 
-# Rerun — uses your customized config
-make deploy IMG=<img>
-```
+### Required for RDMA Tests
 
-### How config loading works
+| Requirement | Why |
+|-------------|-----|
+| RDMA device plugin running | Exposes RDMA resources to pods |
+| RDMA resource in `jobs.resources` config | e.g., `nvidia.com/roce: "1"` or `rdma/rdma_shared_device_a: "1"` |
+| InfiniBand/RoCE NICs on nodes | `mlx5_*` devices in `/sys/class/infiniband/` |
 
-```
-Auto-detect platform (AKS/EKS/CoreWeave/OCP)
-    |
-    v
-Load embedded defaults (pkg/config/platforms/aks.yaml)
-    |
-    v
-Override with /etc/rhaii-validate/platform.yaml (if exists)
-    |
-    v
-Override with --config flag (if provided, highest priority)
-```
+### Platform-Specific Notes
 
-### Platform-specific defaults
+**AKS:**
+- Use ND-series VMs for RDMA (NC-series has GPUs but no InfiniBand)
+- GPU label `nvidia.com/gpu.present=true` auto-detected by GPU operator
+- `ibstat`/`ibv_devices` may not be on host — sysfs fallback used
 
-| Setting | AKS | CoreWeave | EKS | OCP |
-|---|---|---|---|---|
-| GPU taint key | `sku` | `nvidia.com/gpu` | `nvidia.com/gpu` | `nvidia.com/gpu` |
-| RDMA device plugin | `rdma-shared-device-plugin` | `rdma-shared-device-plugin` | `efa-device-plugin` | `rdma-shared-device-plugin` |
-| NIC prefix | `mlx5_` | `mlx5_` | `efa_` | `mlx5_` |
+**OpenShift (OCP):**
+- Privileged SCC auto-granted to `rhaii-validator` service account
+- GPU operator must be installed (`nvidia-gpu-operator` namespace)
+- For RDMA: Network Operator with RDMA shared device plugin
+- Add RDMA resource to config: `oc edit cm rhaii-validate-config -n rhaii-validation`
 
-### Example override
+**CoreWeave:**
+- GPU nodes may not have `nvidia.com/gpu.present` label — auto-discovered from node allocatable resources
+- DaemonSet uses hostname affinity instead of label selector
+- RDMA device plugin in `cw-rdma` namespace
 
-```yaml
-# Only specify fields you want to change
-gpu:
-  min_driver_version: "550.0"
-  supported_types: ["H200", "B200"]
-thresholds:
-  tcp_bandwidth_gbps:
-    pass: 50
-podConfiguration:
-  annotations:
-    custom-annotation: "value"
-  resourceRequests:
-    cpu: "1"
-    memory: "2Gi"
-```
+**EKS:**
+- GPU label auto-detected
+- EFA (Elastic Fabric Adapter) instead of InfiniBand for RDMA
+- EFA device plugin exposes `efa` resources
 
-See [examples/configmap.yaml](examples/configmap.yaml) for a full example.
+### What Gets Auto-Detected (No Config Needed)
+
+| Setting | How |
+|---------|-----|
+| GPU vendor (NVIDIA/AMD) | Node labels or allocatable resources |
+| GPU node discovery | `nvidia.com/gpu.present` label, fallback to allocatable scan |
+| Platform (AKS/OCP/EKS/CoreWeave) | Node labels and provider ID |
+| GPU count per node | `node.status.allocatable` |
+| GPU-NIC topology | sysfs NUMA affinity |
+| OpenShift SCC | Auto-created when OCP detected |
+
+### What You Configure (Platform YAML or ConfigMap)
+
+| Setting | Where | Example |
+|---------|-------|---------|
+| Min driver version | `gpu.min_driver_version` | `"535.0"` |
+| Pod resources | `agent.resources`, `jobs.resources` | `cpu: "500m"` |
+| RDMA resource | `jobs.resources` | `nvidia.com/roce: "1"` |
+| Bandwidth thresholds | `thresholds.*` | `pass: 25, warn: 10, fail: 5` |
 
 ## Architecture
 
-```
-rhaii-validate-agent deploy --image <img> --bandwidth
-    |
-    +-- RBAC + Namespace (from embedded deploy/rbac.yaml)
-    +-- Platform detection + ConfigMap (preserved across runs)
-    +-- DaemonSet agent (per-node checks, no GPU request)
-    |       +-- GPU checks (nvidia-smi, privileged mode)
-    |       +-- RDMA checks (ibv_devices, ibstat)
-    |       +-- Annotation: starting → running → done/error
-    |       +-- Blocks until controller collects logs
-    |
-    +-- Job Runner (multi-node bandwidth tests)
-    |       +-- Auto-detect: nvidia.com/gpu=8 from node allocatable
-    |       +-- Server Job on node A (iperf3 -s)
-    |       +-- Client Jobs on nodes B,C (iperf3 -c <serverIP>)
-    |       +-- All GPUs requested for exclusive access
-    |
-    +-- Collect all results → consolidated report
-    +-- Cleanup (DaemonSet + RBAC, ConfigMap preserved)
-```
+- GPU vendor (NVIDIA/AMD) auto-detected from node labels or allocatable resources
+- GPU tools run on host via `chroot /host` (privileged DaemonSet)
+- Bandwidth jobs use ring topology (every node tested as sender + receiver)
+- RDMA tests expanded per GPU-NIC pair using discovered topology
+- RDMA tests skipped if no RDMA resource configured
+- Report stored in ConfigMap for persistence
+- Job images defined in `manifests/image-references/jobs.yaml` (embedded at build time)
 
-## Testing
+## GPU Vendor Support
 
-```bash
-make test                                                    # Unit tests
-make run-local                                               # Local checks (--no-wait)
-make deploy IMG=quay.io/{user}/rhaii-validate-agent:dev      # Full cluster test
-```
+| Vendor | Driver Check | ECC Check | Bandwidth Jobs |
+|--------|-------------|-----------|----------------|
+| NVIDIA | nvidia-smi | nvidia-smi (ECC query) | iperf3, ib_write_bw |
+| AMD | rocm-smi | rocm-smi (RAS query) | Skipped (NVIDIA-only images) |
 
-## Make Targets
+Vendor is auto-detected. No configuration needed.
 
-```
-make build          Build agent binary (version from git describe)
-make test           Run unit tests
-make container      Build container image (IMG=...)
-make push           Push container image (IMG=...)
-make deploy         Full lifecycle: build, deploy, collect, report, cleanup (IMG=...)
-make run            Deploy agent DaemonSet only via kubectl (IMG=...)
-make logs           Collect results from pod logs
-make clean          Remove agent DaemonSet
-make run-local      Run agent locally (--no-wait, exits after checks)
-make fmt            Format code
-make lint           Run linter
-```
+See [docs/platform-config.md](docs/platform-config.md) for per-platform configuration examples (OCP, AKS, CoreWeave, EKS).
+See [CLAUDE.md](CLAUDE.md) for full developer docs.
+See [docs/dev.md](docs/dev.md) for odh-cli integration guide.

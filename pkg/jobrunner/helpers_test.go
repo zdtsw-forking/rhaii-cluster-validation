@@ -62,8 +62,8 @@ func TestBuildJobSpecBasic(t *testing.T) {
 	}
 
 	// ServiceAccountName
-	if spec.ServiceAccountName != "rhaii-validate-agent" {
-		t.Errorf("ServiceAccountName = %q, want %q", spec.ServiceAccountName, "rhaii-validate-agent")
+	if spec.ServiceAccountName != "rhaii-validator" {
+		t.Errorf("ServiceAccountName = %q, want %q", spec.ServiceAccountName, "rhaii-validator")
 	}
 
 	// Container

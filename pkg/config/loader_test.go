@@ -15,20 +15,51 @@ func TestLoad_DefaultsOnly(t *testing.T) {
 	if cfg.Platform != PlatformAKS {
 		t.Errorf("expected AKS, got %s", cfg.Platform)
 	}
-	if cfg.GPU.TaintKey != "sku" {
-		t.Errorf("expected taint key 'sku', got %s", cfg.GPU.TaintKey)
+	if cfg.GPU.MinDriverVersion != "535.0" {
+		t.Errorf("expected min driver 535.0, got %s", cfg.GPU.MinDriverVersion)
+	}
+}
+
+func TestLoad_OverrideJobResources(t *testing.T) {
+	dir := t.TempDir()
+	overrideFile := filepath.Join(dir, "override.yaml")
+
+	content := `
+jobs:
+  requests:
+    cpu: "1"
+    memory: "1Gi"
+    nvidia.com/roce: "1"
+  limits:
+    nvidia.com/roce: "1"
+`
+	if err := os.WriteFile(overrideFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(PlatformAKS, overrideFile)
+	if err != nil {
+		t.Fatalf("Load with override returned error: %v", err)
+	}
+
+	if cfg.Jobs.Requests["nvidia.com/roce"] != "1" {
+		t.Errorf("expected roce in requests, got %v", cfg.Jobs.Requests)
+	}
+	if cfg.Jobs.Limits["nvidia.com/roce"] != "1" {
+		t.Errorf("expected roce in limits, got %v", cfg.Jobs.Limits)
+	}
+	if cfg.Jobs.Requests["cpu"] != "1" {
+		t.Errorf("expected cpu override to 1, got %s", cfg.Jobs.Requests["cpu"])
 	}
 }
 
 func TestLoad_WithOverrideFile(t *testing.T) {
-	// Create temp override file
 	dir := t.TempDir()
 	overrideFile := filepath.Join(dir, "override.yaml")
 
 	content := `
 gpu:
   min_driver_version: "550.0"
-  supported_types: ["H200", "B200"]
 thresholds:
   tcp_bandwidth_gbps:
     pass: 50
@@ -46,20 +77,11 @@ thresholds:
 	if cfg.GPU.MinDriverVersion != "550.0" {
 		t.Errorf("expected min driver 550.0, got %s", cfg.GPU.MinDriverVersion)
 	}
-	if len(cfg.GPU.SupportedTypes) != 2 || cfg.GPU.SupportedTypes[0] != "H200" {
-		t.Errorf("expected [H200, B200], got %v", cfg.GPU.SupportedTypes)
-	}
 	if cfg.Thresholds.TCPBandwidth.Pass != 50 {
 		t.Errorf("expected TCP pass 50, got %f", cfg.Thresholds.TCPBandwidth.Pass)
 	}
 
 	// Non-overridden fields should keep defaults
-	if cfg.GPU.TaintKey != "sku" {
-		t.Errorf("taint key should remain 'sku', got %s", cfg.GPU.TaintKey)
-	}
-	if cfg.RDMA.NICPrefix != "mlx5_" {
-		t.Errorf("NIC prefix should remain 'mlx5_', got %s", cfg.RDMA.NICPrefix)
-	}
 	if cfg.Thresholds.RDMABandwidthPD.Pass != 180 {
 		t.Errorf("RDMA PD pass should remain 180, got %f", cfg.Thresholds.RDMABandwidthPD.Pass)
 	}

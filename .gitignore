@@ -18,3 +18,4 @@ stdout.log
 
 # Go
 vendor/
+.claude/

@@ -1,263 +1,220 @@
-# RHAII Cluster Validation Agent
+# RHAII Cluster Validation
 
 ## Project Overview
 
-This repo contains the **Tier 2 agent** for RHAII cluster validation. It runs as a privileged DaemonSet on GPU nodes to perform hardware-level checks that cannot be done via the Kubernetes API.
+kubectl plugin for validating GPU cluster readiness for AI/ML workloads. Checks GPU hardware, RDMA networking, and cross-node bandwidth.
 
 **Tier 1 (API checks)** will live in [odh-cli](https://github.com/opendatahub-io/odh-cli) (`kubectl odh validate`) — integration planned.
-**Tier 2 (agent checks)** live here — this is the agent binary that runs on each GPU node.
-
-The binary has **two modes**:
-- **`run`** — Agent mode: runs hardware checks on the current node (used by DaemonSet pods)
-- **`deploy`** — Controller mode: deploys agents to GPU nodes, collects results, prints report
-
-**Phase 1 (now):** Standalone — `deploy` command handles the full lifecycle.
-**Phase 2 (later):** Integrate with odh-cli — `pkg/controller/` and `pkg/checks/` imported as Go modules.
+**Tier 2 (hardware checks)** live here — runs on GPU nodes via privileged DaemonSet.
 
 **Epic:** INFERENG-4707
+
+## CLI
+
+```bash
+kubectl rhaii-validate gpu            # GPU hardware checks (driver, ECC)
+kubectl rhaii-validate networking     # Network bandwidth tests (iperf3, RDMA)
+kubectl rhaii-validate all            # Everything
+kubectl rhaii-validate deps           # Check operators/CRDs (future)
+kubectl rhaii-validate clean          # Remove all validation resources
+kubectl rhaii-validate --version
+
+# Flags
+--debug                               # Keep pods alive for debugging
+-o json                                # JSON output
+--image <img>                          # Override baked-in container image
+--server-node <node>                   # Star topology (1 server, N clients)
+--namespace <ns>                       # Custom namespace (default: rhaii-validation)
+```
 
 ## Architecture
 
 ```
-rhaii-validate-agent deploy --image <img>  (controller mode, runs on workstation)
+kubectl rhaii-validate all
     |
-    +-- Ensures namespace + RBAC (from embedded deploy/rbac.yaml)
-    +-- Detects platform (AKS/EKS/CoreWeave/OCP) from node labels
-    +-- Creates ConfigMap with platform defaults (preserved across runs)
-    +-- Discovers GPU nodes via K8s API
-    +-- Deploys DaemonSet (from embedded deploy/daemonset.yaml)
+    +-- Auto-detects GPU vendor (NVIDIA/AMD) from node labels or allocatable
+    +-- Auto-detects platform (AKS/EKS/CoreWeave/OCP)
+    +-- Creates namespace + RBAC (+ OpenShift SCC if OCP)
+    +-- Deploys DaemonSet (host root mounted at /host)
     |       |
-    |       +-- rhaii-validate-agent run  (agent mode, on each GPU node)
-    |       |       +-- Annotation: starting → running → done/error
-    |       |       +-- GPU checks (nvidia-smi) — no GPU resource request needed
-    |       |       +-- RDMA checks (ibstat, ibv_devices)
-    |       |       +-- JSON to stdout, blocks on <-ctx.Done()
+    |       +-- Per-node checks via chroot /host:
+    |       |       +-- GPU driver (nvidia-smi / rocm-smi)
+    |       |       +-- GPU ECC errors
+    |       |       +-- GPU-NIC topology (NUMA affinity from sysfs)
+    |       |       +-- RDMA devices (ibv_devices, fallback to sysfs)
+    |       |       +-- RDMA NIC status (ibstat, fallback to sysfs)
     |       |
-    +-- Waits for "done"/"error" annotations on all pods
-    +-- Collects results from pod logs
+    +-- Collects JSON results from pod logs
     |
-    +-- [auto, 2+ GPU nodes] Job Runner Framework
-    |       +-- Auto-detects GPU resource (nvidia.com/gpu or amd.com/gpu)
-    |       +-- Auto-detects GPU count per node from node.Status.Allocatable
-    |       +-- Deploys server Job on one node (iperf3 -s)
-    |       +-- Deploys client Jobs on other nodes (iperf3 -c <serverIP>)
-    |       +-- Jobs request all available GPUs (auto-detected)
-    |       +-- Collects results, parses output
-    |       +-- Cleans up Jobs automatically
+    +-- Multi-node bandwidth jobs (ring topology):
+    |       +-- iperf3: TCP bandwidth per node pair
+    |       +-- ib_write_bw: RDMA per GPU-NIC pair (from topology)
+    |       +-- RDMA skipped if no RDMA resource configured
+    |       +-- Jobs use image from manifests/image-references/jobs.yaml
     |
-    +-- Cleans up DaemonSet + RBAC (ConfigMap preserved for reuse)
-    +-- Prints consolidated report
-    +-- Exits non-zero if any check reported FAIL
+    +-- Stores JSON report in ConfigMap (persists after cleanup)
+    +-- Prints table report with topology
+    +-- Cleans up (DaemonSet + RBAC, ConfigMap + report preserved)
 ```
 
 ## Two Workload Types
 
-| | DaemonSet Agent | Job Runner |
+| | DaemonSet (per-node) | Jobs (multi-node) |
 |---|---|---|
-| **Purpose** | Per-node hardware checks | Multi-node bandwidth/NCCL tests |
-| **GPU request** | None (privileged mode, nvidia-smi only) | All GPUs auto-detected from node |
-| **K8s resource** | DaemonSet (one pod per GPU node) | Jobs (server + clients) |
-| **Completion** | Annotation-based (`done`/`error`) | Job status (succeeded/failed) |
-| **Triggered by** | Always (part of deploy) | Automatic when 2+ GPU nodes and jobs registered |
-
-## Language and Framework
-
-- **Language:** Go 1.25+
-- **CLI framework:** Cobra (two subcommands: `run`, `deploy`)
-- **K8s client:** client-go (controller deploys DaemonSet + Jobs, collects pod logs)
-- **Container base:** UBI9 (`registry.access.redhat.com/ubi9/ubi-minimal`)
-- **Container image:** Single image for both agent and jobs (includes iperf3, perftest, rdma tools)
-- **Version:** Set at build time via `-ldflags "-X main.version=..."`, defaults to `"dev"`
-
-## CLI Usage
-
-```bash
-# Version
-rhaii-validate-agent --version
-
-# Agent mode — runs checks on current node
-rhaii-validate-agent run                                    # Auto-detect node name
-rhaii-validate-agent run --no-wait                          # Exit immediately (local/CI)
-rhaii-validate-agent run --bandwidth --iperf-server <ip>    # + TCP bandwidth test (standalone mode)
-rhaii-validate-agent run --config config.yaml               # Override auto-loaded config
-
-# Controller mode — deploy agents, collect results, print report
-rhaii-validate-agent deploy --image <img>                   # Full lifecycle
-rhaii-validate-agent deploy --image <img> --server-node <node>  # Specific server node for jobs
-rhaii-validate-agent deploy --image <img> --client-nodes <n1,n2>  # Specific client nodes for jobs
-
-# Makefile shortcuts
-make deploy IMG=<img>                                       # Build + deploy + collect + report
-make run-local                                              # Run checks locally with --no-wait
-```
-
-## Exit Codes
-
-- **0** — all checks passed (or passed with warnings)
-- **1** — one or more checks reported FAIL (CI/CD can gate on this)
+| Purpose | Hardware checks | Bandwidth tests |
+| Image | rhaii-validator (your build) | llm-d-rdma-tools-dev (from jobs.yaml) |
+| GPU request | None (privileged + chroot) | 1 per pod (auto-detected) |
+| Host access | chroot /host | None (self-contained image) |
+| Checks | `gpu` or `all` mode | `networking` or `all` mode |
 
 ## Project Structure
 
 ```
 rhaii-cluster-validation/
-├── cmd/agent/
-│   └── main.go                     # CLI: run + deploy subcommands, version via ldflags
-│
+├── cmd/agent/main.go              # CLI: gpu, networking, all, deps, clean, run (hidden)
 ├── pkg/
-│   ├── annotator/                  # Pod annotation updates (starting/running/done/error)
-│   │   ├── annotator.go            # NewWithClient() for DI, SetStatus() via JSON merge patch
-│   │   └── annotator_test.go
-│   │
-│   ├── checks/                     # Per-node checks + multi-node jobs (by category)
-│   │   ├── check.go                # Check interface, Result, NodeReport types
-│   │   ├── gpu/                    # driver.go, ecc.go + tests
-│   │   ├── rdma/                   # devices.go, status.go + rdmabw_job.go + tests
-│   │   └── networking/             # bandwidth.go + iperf_job.go + tests
-│   │
-│   ├── config/                     # Platform detection + config loading
-│   │   ├── platform.go             # PlatformConfig, PodConfiguration structs
-│   │   ├── detect.go               # Auto-detect from node labels/provider ID
-│   │   ├── loader.go               # Load embedded defaults + override file
-│   │   └── platforms/*.yaml        # Embedded per-platform configs
-│   │
-│   ├── controller/                 # Full lifecycle orchestration
-│   │   ├── controller.go           # RBAC → config → DaemonSet → wait → collect → jobs → cleanup
-│   │   └── controller_test.go
-│   │
-│   ├── jobrunner/                  # Generic multi-node job framework
-│   │   ├── job.go                  # Job interface, Configurable, PodConfig, JobResult types
-│   │   ├── runner.go               # RunJob: server → wait IP → clients → wait → collect → cleanup
-│   │   └── helpers.go              # BuildJobSpec: base K8s Job with PodConfig applied
-│   │
-│   └── runner/                     # Check execution engine
-│       ├── runner.go               # Run checks, output JSON, return report
-│       └── runner_test.go
-│
+│   ├── checks/
+│   │   ├── check.go               # Check interface, Result, NodeTopology, NodeReport
+│   │   ├── gpu/
+│   │   │   ├── driver.go          # NVIDIA driver check (chroot /host nvidia-smi)
+│   │   │   ├── ecc.go             # NVIDIA ECC check
+│   │   │   ├── amd_driver.go      # AMD driver check (chroot /host rocm-smi)
+│   │   │   ├── amd_ecc.go         # AMD ECC/RAS check
+│   │   │   └── topology.go        # GPU-NIC-NUMA topology discovery
+│   │   ├── rdma/
+│   │   │   ├── devices.go         # RDMA device discovery (ibv_devices/sysfs)
+│   │   │   ├── status.go          # RDMA NIC status (ibstat/sysfs)
+│   │   │   └── rdmabw_job.go      # ib_write_bw job (-d device --use_cuda gpu)
+│   │   └── networking/
+│   │       └── iperf_job.go       # iperf3 TCP bandwidth job
+│   ├── config/
+│   │   ├── platform.go            # PlatformConfig, GPUVendor, ResourceConfig
+│   │   ├── detect.go              # Platform auto-detection (all nodes scanned)
+│   │   ├── loader.go              # Load embedded + override config
+│   │   └── platforms/*.yaml       # Per-platform configs
+│   ├── controller/controller.go   # Orchestration: deploy, collect, topology, jobs, cleanup
+│   ├── jobrunner/                 # Multi-node job framework (ring/star, debug, scheduling errors)
+│   └── runner/                    # Per-node check execution
+├── manifests/image-references/
+│   ├── jobs.yaml                  # Job container images (embedded via //go:embed)
+│   └── embed.go
 ├── deploy/
-│   ├── embed.go                    # //go:embed for daemonset.yaml and rbac.yaml
-│   ├── daemonset.yaml              # Agent DaemonSet (single source of truth)
-│   └── rbac.yaml                   # SA + ClusterRole + ClusterRoleBinding
-│
-├── examples/configmap.yaml         # Example ConfigMap for customization
-├── docs/dev.md                     # odh-cli integration guide
-├── Dockerfile                      # Multi-stage UBI9 build
-├── Makefile                        # build, test, container, deploy, run-local
-└── .gitignore
+│   ├── daemonset.yaml             # DaemonSet template (host root at /host, hostPID)
+│   └── rbac.yaml                  # RBAC (SCC added dynamically for OCP)
+├── Dockerfile                     # UBI9 + util-linux (chroot)
+└── Makefile
 ```
 
-## Job Runner Framework
+## Platform Config
 
-### Job Interface
-
-```go
-type Job interface {
-    Name() string
-    ServerSpec(node, namespace, image string) *batchv1.Job
-    ClientSpec(node, namespace, image, serverIP string) *batchv1.Job
-    ParseResult(logs string) (*JobResult, error)
-}
-```
-
-### GPU Auto-Detection
-
-The controller auto-detects GPU resources from `node.Status.Allocatable`:
-- Scans for `nvidia.com/gpu` and `amd.com/gpu` extended resources
-- Takes minimum count across all GPU nodes
-- Sets both requests and limits on job pods for exclusive GPU access
-- No manual configuration needed — fully automated from cluster state
-
-### PodConfig
-
-Jobs accept a `PodConfig` for resource requests, limits, and annotations:
-
-```go
-type PodConfig struct {
-    Annotations      map[string]string  // arbitrary pod annotations
-    ResourceRequests map[string]string  // e.g. {"nvidia.com/gpu": "8", "cpu": "500m"}
-    ResourceLimits   map[string]string  // e.g. {"nvidia.com/gpu": "8"}
-    Privileged       bool
-}
-```
-
-### Built-in Jobs
-
-| Job | Server | Client | Output |
-|---|---|---|---|
-| `iperf3-tcp` | `iperf3 -s --one-off` | `iperf3 -c <ip> -t 10 -J` | JSON (bandwidth Gbps) |
-| `ib-write-bw` | `ib_write_bw --duration 10` | `ib_write_bw --duration 10 <ip>` | Text (bandwidth Gbps) |
-
-### Lifecycle
-
-```
-1. Create server Job (nodeSelector → server node)
-2. Wait for server pod Running + PodIP
-3. Create client Jobs on each client node with server IP
-4. Wait for all client Jobs to complete
-5. Collect logs, parse via job.ParseResult()
-6. Cleanup all Jobs (foreground deletion)
-7. Return []JobResult
-```
-
-## Pod Annotation Status Tracking
-
-Agent updates `rhaii.opendatahub.io/validation-status`:
-
-```
-starting → running → done   (checks completed)
-                   → error  (agent itself failed)
-```
-
-## Platform Configuration
-
-### Config Persistence
-
-ConfigMap `rhaii-validate-config` is **preserved across runs** — not deleted during cleanup. Users can:
-1. Run deploy → ConfigMap created with detected defaults
-2. Edit: `kubectl edit configmap rhaii-validate-config -n rhaii-validation`
-3. Rerun deploy → existing ConfigMap used, overrides merged on top of defaults
-
-### PodConfiguration in Platform Config
-
-`podConfiguration` in the platform config controls pod-level settings. For the DaemonSet agent, resource requests are applied from the config. For jobs, GPU resources are auto-detected.
+Only configurable values. Everything else is auto-detected.
 
 ```yaml
-podConfiguration:
-  annotations:
-    custom-annotation: "value"
-  resourceRequests:
+platform: OCP
+
+agent:
+  requests:
     cpu: "500m"
     memory: "512Mi"
-  resourceLimits:
-    memory: "1Gi"
+  annotations: {}
+
+jobs:
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+    # RDMA resource — manually configured per cluster:
+    #   rdma/ib: "8"
+    #   nvidia.com/roce: "1"
+  limits:
+    # Device resources must be in both requests and limits:
+    #   rdma/ib: "8"
+    #   nvidia.com/roce: "1"
+  annotations: {}
+
+gpu:
+  min_driver_version: "535.0"
+
+thresholds:
+  tcp_bandwidth_gbps:
+    pass: 25
+    warn: 10
+    fail: 5
+  rdma_bandwidth_pd_gbps:
+    pass: 180
+    warn: 100
+    fail: 50
 ```
 
-## Build and Test
+## Auto-Detection
+
+| What | How |
+|------|-----|
+| GPU vendor | Node labels (`nvidia.com/gpu.present`) or allocatable resources |
+| GPU nodes | Label selector, fallback to allocatable scan (CoreWeave) |
+| Platform | Node labels, provider ID (scans all nodes) |
+| GPU count | `node.status.allocatable` |
+| GPU-NIC topology | sysfs NUMA affinity |
+| OpenShift SCC | Auto-created when OCP detected |
+
+## GPU Vendor Support
+
+| Vendor | Driver Check | ECC Check | Bandwidth Jobs |
+|--------|-------------|-----------|----------------|
+| NVIDIA | nvidia-smi (chroot) | nvidia-smi ECC query | iperf3, ib_write_bw |
+| AMD | rocm-smi (chroot) | rocm-smi RAS query | Skipped (NVIDIA-only images) |
+
+## Job Images
+
+Defined in `manifests/image-references/jobs.yaml`, embedded at build time:
+
+```yaml
+images:
+  default: "ghcr.io/llm-d/llm-d-rdma-tools-dev:latest"
+  jobs:
+    iperf3: ""   # uses default
+    rdma: ""     # uses default
+    nccl: ""     # uses default
+```
+
+## Report Storage
+
+JSON report stored in ConfigMap `rhaii-validate-report` after each run:
 
 ```bash
-make build          # Build binary (version from git describe)
-make test           # Run unit tests
-make container      # Build container image (IMG=...)
-make push           # Push container image (IMG=...)
-make deploy         # Full lifecycle: build + deploy + collect + report (IMG=...)
-make run            # Deploy DaemonSet only via kubectl (IMG=...)
-make logs           # Collect results from pod logs
-make clean          # Remove DaemonSet
-make run-local      # Run locally with --no-wait
-make fmt / lint     # Format / lint
+kubectl get cm rhaii-validate-report -n rhaii-validation -o jsonpath='{.data.report\.json}' | jq .
+kubectl get cm rhaii-validate-report -n rhaii-validation -o jsonpath='{.data.report\.json}' | jq '.status'
+```
+
+## Build and Deploy
+
+```bash
+make build              # Build binary
+make install            # Build + install as kubectl plugin
+make container          # Build container image
+make push               # Push container image
+make deploy             # Build + install + run validation
+make deploy-all         # Build + container + push + deploy
+make clean              # Remove validation resources
+make clean-all          # Remove everything including ConfigMap
+make test               # Run unit tests
 ```
 
 ## Coding Conventions
 
-- All checks implement the `Check` interface
-- External tool output parsing extracted into testable functions
-- `apierrors.IsNotFound()` / `apierrors.IsAlreadyExists()` for K8s errors (not string matching)
-- Deploy manifests embedded via `//go:embed` (single source of truth)
-- `NewWithClient()` constructors for dependency injection in tests
-- Error messages lowercase per Go convention
-- `SilenceUsage: true` on cobra — no flag dump on errors
+- All per-node checks implement `Check` interface
+- GPU/RDMA tools run on host via `chroot /host`
+- GPU vendor auto-detected, not configured
+- RDMA resource manually configured in `jobs.resources`
+- Jobs implement optional interfaces: `Configurable`, `ThresholdConfigurable`, `ImageConfigurable`
+- `apierrors.IsNotFound()` for K8s errors (not string matching)
+- Deploy manifests embedded via `//go:embed`
+- Binary name `rhaii-validator`, kubectl plugin name `kubectl-rhaii_validate`
+- `run` subcommand is hidden (internal, used by DaemonSet)
 
 ## Known TODOs
 
-1. **nvidia-smi path from config:** `GPU.NvidiaSmiPath` exists in config but volume mounts hardcode `/usr/bin`
-2. **NCCL all-reduce job:** Requires NCCL libraries in container image + GPU resource requests (framework ready, implementation needed)
-3. **Unit tests for jobrunner:** Test job spec generation and result parsing with fake clientset
+1. NCCL all-reduce job (framework ready, needs NCCL image)
+2. Unit tests for jobrunner with fake clientset
+3. AMD bandwidth jobs (need AMD-compatible images)
+4. `deps` subcommand (check GPU Operator, Network Operator, device plugins)
+5. Per-NIC RDMA testing on bare metal (test all 8 NICs independently)

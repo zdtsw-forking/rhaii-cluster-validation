@@ -12,9 +12,11 @@ import (
 
 // IperfJob implements the Job interface for TCP bandwidth testing via iperf3.
 type IperfJob struct {
-	Duration  int                  // test duration in seconds (default 10)
-	Threshold float64              // Gbps pass threshold
-	PodCfg    *jobrunner.PodConfig // optional pod configuration
+	Duration    int                  // test duration in seconds (default 10)
+	Threshold   float64              // Gbps pass threshold
+	PodCfg      *jobrunner.PodConfig // optional pod configuration
+	ServerImage string               // optional custom server image (empty = use default)
+	ClientImage string               // optional custom client image (empty = use default)
 }
 
 // NewIperfJob creates an iperf3 TCP bandwidth job.
@@ -26,7 +28,26 @@ func NewIperfJob(threshold float64, podCfg *jobrunner.PodConfig) *IperfJob {
 	}
 }
 
+// NewIperfJobWithImages creates an iperf3 job with custom images.
+func NewIperfJobWithImages(threshold float64, podCfg *jobrunner.PodConfig, serverImage, clientImage string) *IperfJob {
+	return &IperfJob{
+		Duration:    10,
+		Threshold:   threshold,
+		PodCfg:      podCfg,
+		ServerImage: serverImage,
+		ClientImage: clientImage,
+	}
+}
+
 func (j *IperfJob) Name() string { return "iperf3-tcp" }
+
+// Implement ImageConfigurable interface
+func (j *IperfJob) GetServerImage() string { return j.ServerImage }
+func (j *IperfJob) GetClientImage() string { return j.ClientImage }
+
+// Setters for controller to apply config
+func (j *IperfJob) SetServerImage(img string) { j.ServerImage = img }
+func (j *IperfJob) SetClientImage(img string) { j.ClientImage = img }
 
 func (j *IperfJob) SetPodConfig(cfg *jobrunner.PodConfig) { j.PodCfg = cfg }
 func (j *IperfJob) SetThreshold(t float64)               { j.Threshold = t }

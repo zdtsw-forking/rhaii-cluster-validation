@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 
+	imagereferences "github.com/opendatahub-io/rhaii-cluster-validation/manifests/image-references"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,37 +26,34 @@ const (
 type PlatformConfig struct {
 	Platform Platform `yaml:"platform" json:"platform"`
 
-	GPU              GPUConfig          `yaml:"gpu" json:"gpu"`
-	RDMA             RDMAConfig         `yaml:"rdma" json:"rdma"`
-	Thresholds       ThresholdConfig    `yaml:"thresholds" json:"thresholds"`
-	PodConfiguration PodConfiguration   `yaml:"podConfiguration" json:"podConfiguration"`
+	Agent      ResourceConfig `yaml:"agent" json:"agent"`
+	Jobs       ResourceConfig `yaml:"jobs" json:"jobs"`
+	GPU        GPUConfig      `yaml:"gpu" json:"gpu"`
+	Thresholds ThresholdConfig `yaml:"thresholds" json:"thresholds"`
+	Images     ImageConfig    `yaml:"images" json:"images"`
 }
 
-// PodConfiguration holds pod-level settings applied to agent DaemonSet and job pods.
-// Customizable per platform — different GPU types and clouds may need different resources.
-type PodConfiguration struct {
-	Annotations      map[string]string `yaml:"annotations,omitempty" json:"annotations,omitempty"`
-	ResourceRequests map[string]string `yaml:"resourceRequests,omitempty" json:"resourceRequests,omitempty"`
-	ResourceLimits   map[string]string `yaml:"resourceLimits,omitempty" json:"resourceLimits,omitempty"`
-	Privileged       *bool             `yaml:"privileged,omitempty" json:"privileged,omitempty"`
+// ResourceConfig holds resource requests, limits, and annotations for pods.
+type ResourceConfig struct {
+	Requests    map[string]string `yaml:"requests,omitempty" json:"requests,omitempty"`
+	Limits      map[string]string `yaml:"limits,omitempty" json:"limits,omitempty"`
+	Annotations map[string]string `yaml:"annotations,omitempty" json:"annotations,omitempty"`
 }
 
-// GPUConfig holds GPU-related platform defaults.
+// GPUVendor represents the GPU hardware vendor.
+type GPUVendor string
+
+const (
+	GPUVendorNVIDIA  GPUVendor = "nvidia"
+	GPUVendorAMD     GPUVendor = "amd"
+	GPUVendorUnknown GPUVendor = ""
+)
+
+// GPUConfig holds GPU-related configuration.
+// min_driver_version is configurable per platform. Other vendor-specific settings
+// (node selector, device plugin, taint) are auto-detected from node labels at runtime.
 type GPUConfig struct {
-	SupportedTypes   []string `yaml:"supported_types" json:"supported_types"`
-	DevicePlugin     string   `yaml:"device_plugin" json:"device_plugin"`
-	TaintKey         string   `yaml:"taint_key" json:"taint_key"`
-	TaintValue       string   `yaml:"taint_value" json:"taint_value"`
-	MinDriverVersion string   `yaml:"min_driver_version" json:"min_driver_version"`
-	NvidiaSmiPath    string   `yaml:"nvidia_smi_path" json:"nvidia_smi_path"`
-	NvidiaLibPath    string   `yaml:"nvidia_lib_path" json:"nvidia_lib_path"`
-}
-
-// RDMAConfig holds RDMA-related platform defaults.
-type RDMAConfig struct {
-	DevicePlugin   string `yaml:"device_plugin" json:"device_plugin"`
-	NICPrefix      string `yaml:"nic_prefix" json:"nic_prefix"`
-	ExpectedPerGPU int    `yaml:"expected_devices_per_gpu" json:"expected_devices_per_gpu"`
+	MinDriverVersion string `yaml:"min_driver_version" json:"min_driver_version"`
 }
 
 // ThresholdConfig holds network performance thresholds.
@@ -63,7 +61,6 @@ type ThresholdConfig struct {
 	TCPBandwidth     BandwidthThreshold `yaml:"tcp_bandwidth_gbps" json:"tcp_bandwidth_gbps"`
 	RDMABandwidthPD  BandwidthThreshold `yaml:"rdma_bandwidth_pd_gbps" json:"rdma_bandwidth_pd_gbps"`
 	RDMABandwidthWEP BandwidthThreshold `yaml:"rdma_bandwidth_wep_gbps" json:"rdma_bandwidth_wep_gbps"`
-	TCPLatencyMs     LatencyThreshold   `yaml:"tcp_latency_ms" json:"tcp_latency_ms"`
 }
 
 // BandwidthThreshold defines pass/warn/fail thresholds for bandwidth.
@@ -73,11 +70,41 @@ type BandwidthThreshold struct {
 	Fail float64 `yaml:"fail" json:"fail"`
 }
 
-// LatencyThreshold defines pass/warn/fail thresholds for latency.
-type LatencyThreshold struct {
-	Pass float64 `yaml:"pass" json:"pass"`
-	Warn float64 `yaml:"warn" json:"warn"`
-	Fail float64 `yaml:"fail" json:"fail"`
+
+// ImageConfig holds container images for multi-node test jobs.
+// Allows per-job customization while providing a default fallback.
+type ImageConfig struct {
+	// Default image for all jobs (if job-specific image not set)
+	Default string `yaml:"default" json:"default"`
+
+	// Per-job image overrides (empty string means use Default)
+	Jobs JobImages `yaml:"jobs" json:"jobs"`
+}
+
+// JobImages maps job types to their container images.
+type JobImages struct {
+	Iperf3 string `yaml:"iperf3,omitempty" json:"iperf3,omitempty"`
+	RDMA   string `yaml:"rdma,omitempty" json:"rdma,omitempty"`
+	NCCL   string `yaml:"nccl,omitempty" json:"nccl,omitempty"`
+}
+
+// GetJobImage returns the appropriate image for a job type, falling back to default.
+func (ic *ImageConfig) GetJobImage(jobType string) string {
+	var jobImage string
+	switch jobType {
+	case "iperf3":
+		jobImage = ic.Jobs.Iperf3
+	case "rdma":
+		jobImage = ic.Jobs.RDMA
+	case "nccl":
+		jobImage = ic.Jobs.NCCL
+	}
+
+	// If job-specific image is empty, use default
+	if jobImage == "" {
+		return ic.Default
+	}
+	return jobImage
 }
 
 // platformFileMap maps platform names to their embedded config files.
@@ -88,7 +115,21 @@ var platformFileMap = map[Platform]string{
 	PlatformOCP:       "platforms/ocp.yaml",
 }
 
+// loadImageConfig reads the embedded image configuration from manifests/image-references/jobs.yaml.
+func loadImageConfig() (ImageConfig, error) {
+	// The YAML file contains just an "images" key, so we need a wrapper struct
+	var wrapper struct {
+		Images ImageConfig `yaml:"images"`
+	}
+	if err := yaml.Unmarshal([]byte(imagereferences.JobsYAML), &wrapper); err != nil {
+		return ImageConfig{}, fmt.Errorf("failed to parse embedded image config: %w", err)
+	}
+
+	return wrapper.Images, nil
+}
+
 // GetConfig returns the embedded platform config for the given platform.
+// Image configuration is loaded from manifests/image-references/jobs.yaml (shared across platforms).
 func GetConfig(platform Platform) (PlatformConfig, error) {
 	filename, ok := platformFileMap[platform]
 	if !ok {
@@ -105,6 +146,13 @@ func GetConfig(platform Platform) (PlatformConfig, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return PlatformConfig{}, fmt.Errorf("failed to parse embedded config for %s: %w", platform, err)
 	}
+
+	// Load shared image configuration
+	imgCfg, err := loadImageConfig()
+	if err != nil {
+		return PlatformConfig{}, err
+	}
+	cfg.Images = imgCfg
 
 	return cfg, nil
 }

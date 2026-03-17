@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flatpak-spawn --host env KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 kubectl get pod -n gpu-operator nvidia-device-plugin-daemonset-lp7sg -o json)",
+      "Bash(flatpak-spawn --host env KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 kubectl get pods -n rhaii-validation)",
+      "Bash(flatpak-spawn --host env KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 kubectl run nvidia-check --image=ubuntu:22.04 --restart=Never --overrides='{\"\"spec\"\":{\"\"nodeSelector\"\":{\"\"nvidia.com/gpu.present\"\":\"\"true\"\"},\"\"tolerations\"\":[{\"\"operator\"\":\"\"Exists\"\"}],\"\"containers\"\":[{\"\"name\"\":\"\"nvidia-check\"\",\"\"image\"\":\"\"ubuntu:22.04\"\",\"\"command\"\":[\"\"bash\"\",\"\"-c\"\",\"\"echo === /run/nvidia/driver ===; ls /run/nvidia/driver/ 2>/dev/null; echo === libnvidia-ml ===; find /run/nvidia/driver -name libnvidia-ml* 2>/dev/null; echo === nvidia-smi ===; find /run/nvidia/driver -name nvidia-smi 2>/dev/null; echo === /usr/lib ===; find /usr/lib -name libnvidia-ml* 2>/dev/null; sleep 5\"\"],\"\"securityContext\"\":{\"\"privileged\"\":true},\"\"volumeMounts\"\":[{\"\"name\"\":\"\"host\"\",\"\"mountPath\"\":\"\"/host\"\",\"\"readOnly\"\":true},{\"\"name\"\":\"\"nvidia-driver\"\",\"\"mountPath\"\":\"\"/run/nvidia/driver\"\",\"\"readOnly\"\":true}]}],\"\"volumes\"\":[{\"\"name\"\":\"\"host\"\",\"\"hostPath\"\":{\"\"path\"\":\"\"/\"\"}},{\"\"name\"\":\"\"nvidia-driver\"\",\"\"hostPath\"\":{\"\"path\"\":\"\"/run/nvidia/driver\"\"}}]}}' -n default)",
+      "Bash(flatpak-spawn --host env KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 kubectl logs nvidia-check -n default)",
+      "Bash(flatpak-spawn --host env KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 kubectl delete pod nvidia-check -n default --ignore-not-found)",
+      "Bash(flatpak-spawn --host env KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 kubectl exec -n rhaii-validation rhaii-validate-agent-r75xv -- bash -c \"echo ''=== LD_LIBRARY_PATH ===''; echo $LD_LIBRARY_PATH; echo ''=== /opt/nvidia/lib contents ===''; ls /opt/nvidia/lib/ 2>&1 | head -20; echo ''=== ldd nvidia-smi ===''; ldd /usr/bin/nvidia-smi 2>&1 | head -10; echo ''=== ibv_devices without LD ===''; LD_LIBRARY_PATH= ibv_devices 2>&1; echo ''=== nvidia-smi without LD ===''; LD_LIBRARY_PATH=/opt/nvidia/lib nvidia-smi 2>&1 | head -5\")",
+      "Bash(flatpak-spawn --host env KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 kubectl exec -n rhaii-validation rhaii-validate-agent-r75xv -- sh -c 'echo LD=$LD_LIBRARY_PATH; ls /opt/nvidia/lib/ 2>&1 | head -30')",
+      "Bash(flatpak-spawn --host env KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 kubectl exec -n rhaii-validation rhaii-validate-agent-r75xv -- /bin/sh -c 'ls /opt/nvidia/lib/libc* 2>/dev/null; ls /opt/nvidia/lib/ld-* 2>/dev/null; echo done')",
+      "Bash(flatpak-spawn --host env KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 kubectl logs -n rhaii-validation rhaii-validate-agent-9vs4b)",
+      "Bash(flatpak-spawn --host bash -c \"KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 kubectl logs -n rhaii-validation rhaii-validate-agent-9vs4b 2>&1\")",
+      "Bash(flatpak-spawn --host bash -c \"export KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 && kubectl logs -n rhaii-validation rhaii-validate-agent-9vs4b 2>&1\")",
+      "Bash(flatpak-spawn --host bash -c \"export KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 && cd $HOME/github.com/opendatahub-io/rhaii-cluster-validation && make container IMG=quay.io/aneeshkp/rhaii-validate-agent:latest 2>&1\")",
+      "Bash(flatpak-spawn --host bash -c \"export KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 && cd $HOME/github.com/opendatahub-io/rhaii-cluster-validation && podman build --no-cache --build-arg VERSION=a22994b-dirty -t quay.io/aneeshkp/rhaii-validate-agent:latest . 2>&1\")",
+      "Bash(flatpak-spawn --host bash -c \"export KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 && kubectl get daemonset -n rhaii-validation -o jsonpath=''{.items[0].spec.template.spec.containers[0].image}'' 2>&1\")",
+      "Bash(flatpak-spawn --host bash -c \"export KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 && kubectl describe pod -n rhaii-validation -l app=rhaii-validator 2>&1 | grep ''Failed.*pull'' | head -5\")",
+      "Bash(flatpak-spawn --host bash -c \"export KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 && kubectl delete ns rhaii-validation --ignore-not-found 2>&1\")",
+      "Bash(flatpak-spawn --host bash -c \"export KUBECONFIG=$HOME/.kube/llmd-aputtur-eastus2 && kubectl logs -n rhaii-validation rhaii-validator-8qwdc 2>&1\")",
+      "Bash(flatpak-spawn --host bash -c \"cd $HOME/github.com/opendatahub-io/rhaii-cluster-validation && gh pr view 3 --json title,body,state,headRefName 2>&1\")",
+      "Bash(flatpak-spawn --host bash -c \"cd $HOME/github.com/opendatahub-io/rhaii-cluster-validation && go test ./... 2>&1\")"
+    ]
+  }
+}

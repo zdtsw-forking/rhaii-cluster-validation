@@ -26,19 +26,19 @@ make test
 make container
 
 # Custom image (e.g., your personal Quay)
-make container IMG=quay.io/{user}/rhaii-validate-agent:dev
+make container IMG=quay.io/{user}/rhaii-validator:dev
 ```
 
 ### Run the container locally
 
 ```bash
-podman run --rm quay.io/{user}/rhaii-validate-agent:dev run --node-name local-test
+podman run --rm quay.io/{user}/rhaii-validator:dev run --node-name local-test
 ```
 
 ### Verify tools are installed in the container
 
 ```bash
-podman run --rm --entrypoint /bin/bash quay.io/{user}/rhaii-validate-agent:dev -c "
+podman run --rm --entrypoint /bin/bash quay.io/{user}/rhaii-validator:dev -c "
   echo '=== Installed Tools ==='
   which ibv_devices && echo 'ibv_devices: OK' || echo 'ibv_devices: MISSING'
   which ibstat && echo 'ibstat: OK' || echo 'ibstat: MISSING'
@@ -61,14 +61,14 @@ podman run --rm --entrypoint /bin/bash quay.io/{user}/rhaii-validate-agent:dev -
 ### Push the image
 
 ```bash
-make push IMG=quay.io/{user}/rhaii-validate-agent:dev
+make push IMG=quay.io/{user}/rhaii-validator:dev
 ```
 
 ### Deploy and collect results
 
 ```bash
 # Deploy RBAC + DaemonSet
-make run IMG=quay.io/{user}/rhaii-validate-agent:dev
+make run IMG=quay.io/{user}/rhaii-validator:dev
 
 # Check pod status
 kubectl get pods -n rhaii-validation -o wide
@@ -87,13 +87,13 @@ GPU_NODE=$(kubectl get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items
 
 kubectl run rhaii-validate-test \
   --rm -it \
-  --image=quay.io/{user}/rhaii-validate-agent:dev \
+  --image=quay.io/{user}/rhaii-validator:dev \
   --overrides='{
     "spec": {
       "nodeName": "'$GPU_NODE'",
       "containers": [{
         "name": "rhaii-validate-test",
-        "image": "quay.io/{user}/rhaii-validate-agent:dev",
+        "image": "quay.io/{user}/rhaii-validator:dev",
         "args": ["run", "--node-name", "'$GPU_NODE'"],
         "securityContext": {"privileged": true},
         "resources": {"limits": {"nvidia.com/gpu": "1"}}
@@ -119,13 +119,13 @@ IPERF_IP=$(kubectl get pod iperf-server -o jsonpath='{.status.podIP}')
 # Run agent with bandwidth test
 kubectl run rhaii-validate-bw \
   --rm -it \
-  --image=quay.io/{user}/rhaii-validate-agent:dev \
+  --image=quay.io/{user}/rhaii-validator:dev \
   --overrides='{
     "spec": {
       "nodeName": "'$GPU_NODE'",
       "containers": [{
         "name": "rhaii-validate-bw",
-        "image": "quay.io/{user}/rhaii-validate-agent:dev",
+        "image": "quay.io/{user}/rhaii-validator:dev",
         "args": ["run", "--node-name", "'$GPU_NODE'", "--bandwidth", "--iperf-server", "'$IPERF_IP'"],
         "securityContext": {"privileged": true},
         "resources": {"limits": {"nvidia.com/gpu": "1"}}
@@ -144,7 +144,7 @@ Pipe the agent output through `jq` to verify the JSON structure:
 
 ```bash
 # From local run
-./bin/rhaii-validate-agent --node-name test | jq .
+./bin/rhaii-validator --node-name test | jq .
 
 # From pod logs
 kubectl logs -n rhaii-validation <pod-name> | jq .

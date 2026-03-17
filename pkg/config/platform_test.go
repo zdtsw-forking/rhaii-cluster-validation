@@ -18,24 +18,31 @@ func TestGetConfig_AllPlatforms(t *testing.T) {
 				t.Errorf("expected platform %s, got %s", p, cfg.Platform)
 			}
 
-			// GPU config must have supported types
-			if len(cfg.GPU.SupportedTypes) == 0 {
-				t.Error("GPU.SupportedTypes must not be empty")
+			// Must have min driver version
+			if cfg.GPU.MinDriverVersion == "" {
+				t.Error("GPU.MinDriverVersion must not be empty")
 			}
 
-			// Must have a device plugin
-			if cfg.GPU.DevicePlugin == "" {
-				t.Error("GPU.DevicePlugin must not be empty")
+			// Agent must have resource requests
+			if len(cfg.Agent.Requests) == 0 {
+				t.Error("Agent.Requests must not be empty")
+			}
+			if cfg.Agent.Requests["cpu"] == "" {
+				t.Error("Agent.Requests must have cpu")
+			}
+			if cfg.Agent.Requests["memory"] == "" {
+				t.Error("Agent.Requests must have memory")
 			}
 
-			// Must have nvidia paths
-			if cfg.GPU.NvidiaSmiPath == "" {
-				t.Error("GPU.NvidiaSmiPath must not be empty")
+			// Jobs must have resource requests
+			if len(cfg.Jobs.Requests) == 0 {
+				t.Error("Jobs.Requests must not be empty")
 			}
-
-			// Must have RDMA config
-			if cfg.RDMA.NICPrefix == "" {
-				t.Error("RDMA.NICPrefix must not be empty")
+			if cfg.Jobs.Requests["cpu"] == "" {
+				t.Error("Jobs.Requests must have cpu")
+			}
+			if cfg.Jobs.Requests["memory"] == "" {
+				t.Error("Jobs.Requests must have memory")
 			}
 
 			// Thresholds must be positive
@@ -44,9 +51,6 @@ func TestGetConfig_AllPlatforms(t *testing.T) {
 			}
 			if cfg.Thresholds.RDMABandwidthPD.Pass <= 0 {
 				t.Error("RDMABandwidthPD.Pass must be positive")
-			}
-			if cfg.Thresholds.RDMABandwidthWEP.Pass <= 0 {
-				t.Error("RDMABandwidthWEP.Pass must be positive")
 			}
 
 			// Pass > Warn > Fail for bandwidth
@@ -66,36 +70,79 @@ func TestGetConfig_UnknownPlatform(t *testing.T) {
 		t.Fatalf("GetConfig(Unknown) returned error: %v", err)
 	}
 
-	// Should fall back to AKS defaults
-	if len(cfg.GPU.SupportedTypes) == 0 {
-		t.Error("Unknown platform should fall back to AKS defaults")
+	if cfg.GPU.MinDriverVersion == "" {
+		t.Error("Unknown platform should fall back to defaults with min_driver_version")
 	}
 }
 
-func TestGetConfig_EKS_UsesEFA(t *testing.T) {
-	cfg, err := GetConfig(PlatformEKS)
+func TestResourceConfig_RequestsAndLimits(t *testing.T) {
+	cfg, err := GetConfig(PlatformOCP)
 	if err != nil {
-		t.Fatalf("GetConfig(EKS) returned error: %v", err)
+		t.Fatalf("GetConfig(OCP) returned error: %v", err)
 	}
 
-	if cfg.RDMA.DevicePlugin != "efa-device-plugin" {
-		t.Errorf("EKS should use efa-device-plugin, got %s", cfg.RDMA.DevicePlugin)
+	// Agent: requests set, no limits by default
+	if cfg.Agent.Requests["cpu"] != "500m" {
+		t.Errorf("Agent cpu request = %q, want 500m", cfg.Agent.Requests["cpu"])
 	}
-	if cfg.RDMA.NICPrefix != "efa_" {
-		t.Errorf("EKS should use efa_ NIC prefix, got %s", cfg.RDMA.NICPrefix)
+	if cfg.Agent.Requests["memory"] != "512Mi" {
+		t.Errorf("Agent memory request = %q, want 512Mi", cfg.Agent.Requests["memory"])
+	}
+
+	// Jobs: requests set, limits empty by default
+	if cfg.Jobs.Requests["cpu"] != "500m" {
+		t.Errorf("Jobs cpu request = %q, want 500m", cfg.Jobs.Requests["cpu"])
+	}
+
+	// No GPU/RDMA in default config — those are auto-detected or manual
+	if _, ok := cfg.Jobs.Requests["nvidia.com/gpu"]; ok {
+		t.Error("Jobs should not have nvidia.com/gpu in default config")
+	}
+	if _, ok := cfg.Jobs.Requests["nvidia.com/roce"]; ok {
+		t.Error("Jobs should not have nvidia.com/roce in default config")
 	}
 }
 
-func TestGetConfig_AKS_HasUniqueTaint(t *testing.T) {
+func TestResourceConfig_Annotations(t *testing.T) {
 	cfg, err := GetConfig(PlatformAKS)
 	if err != nil {
 		t.Fatalf("GetConfig(AKS) returned error: %v", err)
 	}
 
-	if cfg.GPU.TaintKey != "sku" {
-		t.Errorf("AKS should use taint key 'sku', got %s", cfg.GPU.TaintKey)
+	// Annotations should be initialized (empty, not nil)
+	if cfg.Agent.Annotations == nil {
+		t.Error("Agent.Annotations should not be nil")
 	}
-	if cfg.GPU.TaintValue != "gpu" {
-		t.Errorf("AKS should use taint value 'gpu', got %s", cfg.GPU.TaintValue)
+	if cfg.Jobs.Annotations == nil {
+		t.Error("Jobs.Annotations should not be nil")
+	}
+}
+
+func TestResourceConfig_WithRDMA(t *testing.T) {
+	// Simulate a config with RDMA resources
+	rc := ResourceConfig{
+		Requests: map[string]string{
+			"cpu":              "500m",
+			"memory":           "512Mi",
+			"nvidia.com/roce":  "1",
+		},
+		Limits: map[string]string{
+			"nvidia.com/roce": "1",
+		},
+	}
+
+	// RDMA in requests
+	if rc.Requests["nvidia.com/roce"] != "1" {
+		t.Error("RDMA should be in requests")
+	}
+
+	// RDMA in limits (must match requests for device resources)
+	if rc.Limits["nvidia.com/roce"] != "1" {
+		t.Error("RDMA should be in limits")
+	}
+
+	// CPU only in requests, not limits
+	if _, ok := rc.Limits["cpu"]; ok {
+		t.Error("CPU should not be in limits")
 	}
 }

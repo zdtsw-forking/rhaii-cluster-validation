@@ -34,9 +34,9 @@ func (c *DriverCheck) Run(ctx context.Context) checks.Result {
 		Name:     c.Name(),
 	}
 
-	output, err := exec.CommandContext(ctx, "nvidia-smi",
-		"--query-gpu=driver_version,cuda_version,gpu_name,memory.total",
-		"--format=csv,noheader,nounits").Output()
+	output, err := hostExec(ctx, "nvidia-smi",
+		"--query-gpu=driver_version,name,memory.total",
+		"--format=csv,noheader,nounits")
 	if err != nil {
 		r.Status = checks.StatusFail
 		r.Message = fmt.Sprintf("nvidia-smi failed: %v", err)
@@ -53,7 +53,6 @@ func (c *DriverCheck) Run(ctx context.Context) checks.Result {
 
 	r.Details = map[string]any{
 		"driver_version":     info.DriverVersion,
-		"cuda_version":       info.CUDAVersion,
 		"gpu_product":        info.GPUName,
 		"memory_total":       info.MemoryTotal,
 		"gpu_count":          info.GPUCount,
@@ -69,8 +68,8 @@ func (c *DriverCheck) Run(ctx context.Context) checks.Result {
 	}
 
 	r.Status = checks.StatusPass
-	r.Message = fmt.Sprintf("NVIDIA driver: %s, CUDA: %s, GPU: %s (%s MiB), %d GPU(s)",
-		info.DriverVersion, info.CUDAVersion, info.GPUName, info.MemoryTotal, info.GPUCount)
+	r.Message = fmt.Sprintf("NVIDIA driver: %s, GPU: %s (%s MiB), %d GPU(s)",
+		info.DriverVersion, info.GPUName, info.MemoryTotal, info.GPUCount)
 
 	return r
 }
@@ -78,13 +77,12 @@ func (c *DriverCheck) Run(ctx context.Context) checks.Result {
 // driverInfo holds parsed nvidia-smi driver query output.
 type driverInfo struct {
 	DriverVersion string
-	CUDAVersion   string
 	GPUName       string
 	MemoryTotal   string
 	GPUCount      int
 }
 
-// parseDriverOutput parses nvidia-smi CSV output for driver_version,cuda_version,gpu_name,memory.total.
+// parseDriverOutput parses nvidia-smi CSV output for driver_version,name,memory.total.
 func parseDriverOutput(output string) (*driverInfo, error) {
 	reader := csv.NewReader(strings.NewReader(strings.TrimSpace(output)))
 	records, err := reader.ReadAll()
@@ -93,17 +91,25 @@ func parseDriverOutput(output string) (*driverInfo, error) {
 	}
 
 	fields := records[0]
-	if len(fields) < 4 {
+	if len(fields) < 3 {
 		return nil, fmt.Errorf("unexpected nvidia-smi output format")
 	}
 
 	return &driverInfo{
 		DriverVersion: strings.TrimSpace(fields[0]),
-		CUDAVersion:   strings.TrimSpace(fields[1]),
-		GPUName:       strings.TrimSpace(fields[2]),
-		MemoryTotal:   strings.TrimSpace(fields[3]),
+		GPUName:       strings.TrimSpace(fields[1]),
+		MemoryTotal:   strings.TrimSpace(fields[2]),
 		GPUCount:      len(records),
 	}, nil
+}
+
+// hostExec runs a command on the host filesystem.
+// The DaemonSet mounts the host root at /host. We use chroot to run
+// commands with the host's binaries and libraries (nvidia-smi, ibstat, etc.).
+func hostExec(ctx context.Context, name string, args ...string) ([]byte, error) {
+	chrootArgs := []string{"/host", name}
+	chrootArgs = append(chrootArgs, args...)
+	return exec.CommandContext(ctx, "chroot", chrootArgs...).Output()
 }
 
 // compareVersions compares two dot-separated version strings numerically.

@@ -3,7 +3,6 @@ package rdma
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strings"
 
@@ -29,11 +28,19 @@ func (c *StatusCheck) Run(ctx context.Context) checks.Result {
 		Name:     c.Name(),
 	}
 
-	output, err := exec.CommandContext(ctx, "ibstat").Output()
+	output, err := hostExec(ctx, "ibstat")
 	if err != nil {
-		r.Status = checks.StatusFail
-		r.Message = fmt.Sprintf("ibstat failed: %v", err)
-		r.Remediation = "Install rdma-core / infiniband-diags"
+		// Fallback: check sysfs for basic NIC info
+		sysOutput, sysErr := hostExec(ctx, "ls", "/sys/class/infiniband/")
+		if sysErr != nil || strings.TrimSpace(string(sysOutput)) == "" {
+			r.Status = checks.StatusFail
+			r.Message = fmt.Sprintf("ibstat not available and no RDMA devices in sysfs")
+			r.Remediation = "Check RDMA device plugin and network operator installation"
+			return r
+		}
+		devs := strings.Fields(strings.TrimSpace(string(sysOutput)))
+		r.Status = checks.StatusWarn
+		r.Message = fmt.Sprintf("ibstat not available on host, %d RDMA device(s) found via sysfs: %s", len(devs), strings.Join(devs, ", "))
 		return r
 	}
 

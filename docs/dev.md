@@ -329,24 +329,18 @@ That's it. The controller automatically:
 package validate_test
 
 import (
-    "context"
     "testing"
 
     "github.com/opendatahub-io/rhaii-cluster-validation/pkg/config"
 )
-
-func TestPlatformDetection(t *testing.T) {
-    // Use fake K8s client to test detection
-    // See pkg/config/detect_test.go for examples
-}
 
 func TestConfigLoading(t *testing.T) {
     cfg, err := config.Load(config.PlatformAKS, "")
     if err != nil {
         t.Fatal(err)
     }
-    if cfg.GPU.TaintKey != "sku" {
-        t.Errorf("expected AKS taint key 'sku', got %s", cfg.GPU.TaintKey)
+    if cfg.GPU.MinDriverVersion == "" {
+        t.Error("expected min_driver_version to be set")
     }
 }
 ```

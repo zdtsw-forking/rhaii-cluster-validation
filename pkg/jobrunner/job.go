@@ -77,6 +77,19 @@ type Configurable interface {
 	SetPodConfig(cfg *PodConfig)
 }
 
+// ImageConfigurable is an optional interface for jobs that use custom container images.
+// Jobs implementing this interface can specify different images for server and client roles.
+// If a job doesn't implement this interface, the runner's default image is used.
+type ImageConfigurable interface {
+	// GetServerImage returns the container image to use for the server role.
+	// Returns empty string to use the runner's default image.
+	GetServerImage() string
+
+	// GetClientImage returns the container image to use for the client role.
+	// Returns empty string to use the runner's default image.
+	GetClientImage() string
+}
+
 // JobResult holds the outcome of a single job pod.
 type JobResult struct {
 	Node    string        `json:"node"`

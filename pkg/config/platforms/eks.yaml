@@ -1,18 +1,20 @@
 platform: EKS
 
-gpu:
-  supported_types: ["H100", "H200", "A100", "B200"]
-  device_plugin: "nvidia-device-plugin"
-  taint_key: "nvidia.com/gpu"
-  taint_value: "present"
-  min_driver_version: "535.0"
-  nvidia_smi_path: "/usr/bin/nvidia-smi"
-  nvidia_lib_path: "/usr/lib64"
+agent:
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+  annotations: {}
 
-rdma:
-  device_plugin: "efa-device-plugin"
-  nic_prefix: "efa_"
-  expected_devices_per_gpu: 1
+jobs:
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+  limits: {}
+  annotations: {}
+
+gpu:
+  min_driver_version: "535.0"
 
 thresholds:
   tcp_bandwidth_gbps:
@@ -27,7 +29,3 @@ thresholds:
     pass: 350
     warn: 200
     fail: 100
-  tcp_latency_ms:
-    pass: 1
-    warn: 5
-    fail: 10

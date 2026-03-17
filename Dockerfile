@@ -8,29 +8,27 @@ RUN go mod download
 
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags "-X main.version=${VERSION}" -o /opt/app-root/rhaii-validate-agent ./cmd/agent/
+RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags "-X main.version=${VERSION}" -o /opt/app-root/rhaii-validator ./cmd/agent/
 
 # Runtime stage
 FROM registry.access.redhat.com/ubi9/ubi:latest
 
-LABEL name="rhaii-validate-agent" \
+LABEL name="rhaii-validator" \
       vendor="Red Hat" \
       summary="RHAII Cluster Validation Agent" \
       description="Per-node hardware validation agent for GPU, RDMA, and network checks"
 
-# Install RDMA and networking tools
+# Install tools needed by the agent
 RUN dnf install -y \
-      libibverbs-utils \
-      infiniband-diags \
-      iperf3 \
+      util-linux \
       pciutils \
       && dnf clean all
 
-COPY --from=builder /opt/app-root/rhaii-validate-agent /usr/local/bin/rhaii-validate-agent
+COPY --from=builder /opt/app-root/rhaii-validator /usr/local/bin/rhaii-validator
 
-# nvidia-smi is expected to be available via host mount or GPU operator
-# The DaemonSet spec should mount /usr/bin/nvidia-smi from the host
+# GPU/RDMA tools (nvidia-smi, ibstat, ibv_devices) run on the host via nsenter.
+# No need to install them in the container - privileged pod + nsenter handles it.
 
 USER 0
 
-ENTRYPOINT ["rhaii-validate-agent"]
+ENTRYPOINT ["rhaii-validator"]
