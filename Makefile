@@ -58,12 +58,17 @@ test:
 	go test ./... -v
 
 IMG_TOOLS ?= quay.io/opendatahub/rhaii-rdma-tools:latest
+RDMA_BUILDER_IMAGE ?= nvcr.io/nvidia/cuda:13.0.0-devel-ubi9
+RDMA_RUNTIME_IMAGE ?= nvcr.io/nvidia/cuda:13.0.0-runtime-ubi9
 
 container:
 	$(CONTAINER_RUNTIME) build --build-arg VERSION=$(VERSION) -t $(IMG) .
 
 container-rdma:
-	$(CONTAINER_RUNTIME) build -f Dockerfile.rdma-tools --build-arg VERSION=$(VERSION) -t $(IMG_TOOLS) .
+	$(CONTAINER_RUNTIME) build -f Dockerfile.rdma-tools \
+		--build-arg BUILDER_IMAGE=$(RDMA_BUILDER_IMAGE) \
+		--build-arg RUNTIME_IMAGE=$(RDMA_RUNTIME_IMAGE) \
+		-t $(IMG_TOOLS) .
 
 push:
 	$(CONTAINER_RUNTIME) push $(IMG)
