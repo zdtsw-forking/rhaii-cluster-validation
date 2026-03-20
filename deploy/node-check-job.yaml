@@ -1,27 +1,26 @@
-apiVersion: apps/v1
-kind: DaemonSet
+apiVersion: batch/v1
+kind: Job
 metadata:
-  name: rhaii-validator
+  name: rhaii-validate-check
   namespace: rhaii-validation
   labels:
-    app: rhaii-validator
+    app: rhaii-validate-check
 spec:
-  selector:
-    matchLabels:
-      app: rhaii-validator
+  backoffLimit: 0
   template:
     metadata:
       labels:
-        app: rhaii-validator
+        app: rhaii-validate-check
     spec:
-      nodeSelector:
-        nvidia.com/gpu.present: "true"
       tolerations:
         - operator: Exists
+      hostPID: true
       containers:
-        - name: agent
+        - name: checker
           image: ${IMG}
           imagePullPolicy: Always
+          securityContext:
+            privileged: true
           args:
             - run
             - --node-name
@@ -31,16 +30,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-          securityContext:
-            privileged: true
           volumeMounts:
             - name: host-root
               mountPath: /host
@@ -48,7 +37,6 @@ spec:
             - name: config
               mountPath: /etc/rhaii-validate
               readOnly: true
-      hostPID: true
       volumes:
         - name: host-root
           hostPath:
@@ -57,6 +45,6 @@ spec:
         - name: config
           configMap:
             name: rhaii-validate-config
-            optional: true  # Agent falls back to embedded defaults if missing
-      restartPolicy: Always
+            optional: true
+      restartPolicy: Never
       serviceAccountName: rhaii-validator

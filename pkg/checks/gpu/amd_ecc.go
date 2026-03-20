@@ -3,6 +3,7 @@ package gpu
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/checks"
@@ -27,7 +28,7 @@ func (c *AMDECCCheck) Run(ctx context.Context) checks.Result {
 		Name:     c.Name(),
 	}
 
-	output, err := hostExec(ctx, "rocm-smi", "--showrasinfo", "all")
+	output, err := exec.CommandContext(ctx, "rocm-smi", "--showrasinfo", "all").Output()
 	if err != nil {
 		r.Status = checks.StatusSkip
 		r.Message = fmt.Sprintf("rocm-smi RAS query failed: %v", err)

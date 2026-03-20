@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/annotator"
 	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/checks/gpu"
 	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/checks/networking"
 	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/checks/rdma"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 )
+
 
 var (
 	version      = "dev"
@@ -176,6 +176,7 @@ func addDeployFlags(cmd *cobra.Command, opts *controller.Options) {
 	cmd.Flags().StringVar(&opts.ConfigFile, "config", "", "Path to config override file")
 	cmd.Flags().BoolVar(&opts.Debug, "debug", false, "Keep pods alive after run for debugging")
 	cmd.Flags().StringVarP(&opts.OutputFormat, "output", "o", "table", "Output format: table or json")
+	cmd.Flags().StringSliceVar(&opts.Nodes, "nodes", nil, "Restrict to specific GPU nodes (default: all GPU nodes)")
 }
 
 // --- clean subcommand ---
@@ -208,7 +209,7 @@ func newCleanCmd() *cobra.Command {
 	return cmd
 }
 
-// --- run subcommand (internal agent mode, used by DaemonSet pods) ---
+// --- run subcommand (internal, used by per-node check Jobs) ---
 
 func newRunCmd() *cobra.Command {
 	var (
@@ -217,13 +218,12 @@ func newRunCmd() *cobra.Command {
 		iperfServer  string
 		tcpThreshold float64
 		configFile   string
-		noWait       bool
 	)
 
 	cmd := &cobra.Command{
 		Use:    "run",
-		Short:  "Run checks on current node (internal, used by DaemonSet)",
-		Hidden: true, // not user-facing
+		Short:  "Run checks on current node (internal, used by check Jobs)",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if nodeName == "" {
 				nodeName = os.Getenv("NODE_NAME")
@@ -236,23 +236,6 @@ func newRunCmd() *cobra.Command {
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			// Set up pod annotation updates (only when running in-cluster)
-			setStatus := func(_ context.Context, _ string) {} // no-op for local runs
-			if podName, podNS := os.Getenv("POD_NAME"), os.Getenv("POD_NAMESPACE"); podName != "" && podNS != "" {
-				ann, err := annotator.New(podName, podNS)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to create annotator: %v\n", err)
-				} else {
-					setStatus = func(ctx context.Context, status string) {
-						if err := ann.SetStatus(ctx, status); err != nil {
-							fmt.Fprintf(os.Stderr, "Warning: failed to set status %q: %v\n", status, err)
-						}
-					}
-				}
-			}
-
-			setStatus(ctx, annotator.StatusStarting)
-
 			cfg, err := config.Load(config.PlatformUnknown, configFile)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to load config: %v, using defaults\n", err)
@@ -262,14 +245,12 @@ func newRunCmd() *cobra.Command {
 
 			r := runner.New(nodeName, os.Stdout)
 
-			// Register checks based on mode (from CHECK_MODE env set by controller)
 			vendor := os.Getenv("GPU_VENDOR")
 			checkMode := os.Getenv("CHECK_MODE")
 			if checkMode == "" {
 				checkMode = "all"
 			}
 
-			// GPU checks (for "gpu" and "all" modes)
 			if checkMode == "gpu" || checkMode == "all" {
 				switch config.GPUVendor(vendor) {
 				case config.GPUVendorAMD:
@@ -281,13 +262,11 @@ func newRunCmd() *cobra.Command {
 				}
 			}
 
-			// Networking checks (for "networking" and "all" modes)
 			if checkMode == "networking" || checkMode == "all" {
 				r.AddCheck(gpu.NewTopologyCheck(nodeName))
 				r.AddCheck(rdma.NewDevicesCheck(nodeName))
 				r.AddCheck(rdma.NewStatusCheck(nodeName))
 			}
-
 
 			if bandwidth {
 				threshold := cfg.Thresholds.TCPBandwidth.Pass
@@ -297,38 +276,19 @@ func newRunCmd() *cobra.Command {
 				r.AddCheck(networking.NewTCPBandwidthCheck(nodeName, iperfServer, threshold))
 			}
 
-			setStatus(ctx, annotator.StatusRunning)
-
 			report, err := r.Run(ctx)
-
-			if err != nil {
-				setStatus(ctx, annotator.StatusError)
-			} else {
-				setStatus(ctx, annotator.StatusDone)
-			}
-
 			hasFailures := err == nil && runner.HasFailures(report)
 
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			} else if hasFailures {
+				return err
+			}
+			if hasFailures {
 				fmt.Fprintf(os.Stderr, "Validation failed: one or more checks reported FAIL\n")
-			} else {
-				fmt.Fprintf(os.Stderr, "Validation complete: all checks passed\n")
+				return fmt.Errorf("validation failed: one or more checks reported FAIL")
 			}
 
-			if noWait {
-				if err != nil {
-					return err
-				}
-				if hasFailures {
-					return fmt.Errorf("validation failed: one or more checks reported FAIL")
-				}
-				return nil
-			}
-
-			fmt.Fprintf(os.Stderr, "Waiting for controller to collect results...\n")
-			<-ctx.Done()
+			fmt.Fprintf(os.Stderr, "Validation complete: all checks passed\n")
 			return nil
 		},
 	}
@@ -338,7 +298,6 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&iperfServer, "iperf-server", "", "iperf3 server IP")
 	cmd.Flags().Float64Var(&tcpThreshold, "tcp-threshold", 25.0, "TCP bandwidth pass threshold (Gbps)")
 	cmd.Flags().StringVar(&configFile, "config", "", "Path to config file")
-	cmd.Flags().BoolVar(&noWait, "no-wait", false, "Exit after checks (for local/CI)")
 
 	return cmd
 }

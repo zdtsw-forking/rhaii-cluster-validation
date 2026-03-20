@@ -19,3 +19,4 @@ stdout.log
 # Go
 vendor/
 .claude/
+cursor-context/

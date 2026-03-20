@@ -34,9 +34,9 @@ func (c *DriverCheck) Run(ctx context.Context) checks.Result {
 		Name:     c.Name(),
 	}
 
-	output, err := hostExec(ctx, "nvidia-smi",
+	output, err := exec.CommandContext(ctx, "nvidia-smi",
 		"--query-gpu=driver_version,name,memory.total",
-		"--format=csv,noheader,nounits")
+		"--format=csv,noheader,nounits").Output()
 	if err != nil {
 		r.Status = checks.StatusFail
 		r.Message = fmt.Sprintf("nvidia-smi failed: %v", err)
@@ -101,14 +101,6 @@ func parseDriverOutput(output string) (*driverInfo, error) {
 		MemoryTotal:   strings.TrimSpace(fields[2]),
 		GPUCount:      len(records),
 	}, nil
-}
-
-// hostExec runs a command directly inside the container. GPU tools like
-// nvidia-smi are expected to be injected by the device plugin when the pod
-// requests GPU resources — if they're missing, it indicates the GPU Operator
-// is not functioning correctly.
-func hostExec(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).Output()
 }
 
 // compareVersions compares two dot-separated version strings numerically.

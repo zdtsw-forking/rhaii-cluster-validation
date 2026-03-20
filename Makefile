@@ -1,4 +1,4 @@
-.PHONY: build test container push deploy deploy-all install uninstall run logs clean clean-all help
+.PHONY: build test container push deploy deploy-all install uninstall logs clean clean-all help
 
 IMG ?= quay.io/opendatahub/rhaii-validator:latest
 export IMG
@@ -32,9 +32,8 @@ help:
 	@echo "Deploy:"
 	@echo "  make deploy         - Deploy using existing image (IMG=...)"
 	@echo "  make deploy-all     - Build + push + deploy (IMG=...)"
-	@echo "  make run            - Deploy agent DaemonSet only via kubectl (IMG=...)"
-	@echo "  make logs           - Collect agent results from pod logs"
-	@echo "  make clean          - Remove agent DaemonSet and jobs"
+	@echo "  make logs           - Collect check job results from pod logs"
+	@echo "  make clean          - Remove check jobs, bandwidth jobs, and RBAC"
 	@echo "  make clean-all      - Remove all resources including ConfigMap"
 	@echo ""
 	@echo "CLI Testing:"
@@ -81,15 +80,9 @@ deploy: install
 
 deploy-all: build container push deploy
 
-run:
-	kubectl apply -f deploy/rbac.yaml
-	envsubst < deploy/daemonset.yaml | kubectl apply -f -
-	@echo "Waiting for agent pods to start..."
-	kubectl rollout status daemonset/rhaii-validator -n $(NAMESPACE) --timeout=120s
-
 logs:
-	@echo "=== Agent Results ==="
-	@for pod in $$(kubectl get pods -n $(NAMESPACE) -l app=rhaii-validator -o jsonpath='{.items[*].metadata.name}'); do \
+	@echo "=== Check Job Results ==="
+	@for pod in $$(kubectl get pods -n $(NAMESPACE) -l app=rhaii-validate-check -o jsonpath='{.items[*].metadata.name}'); do \
 		echo "--- $$pod ---"; \
 		kubectl logs -n $(NAMESPACE) $$pod 2>/dev/null; \
 		echo ""; \
@@ -97,7 +90,7 @@ logs:
 
 clean:
 	@echo "Cleaning up validation resources (preserving ConfigMap)..."
-	-kubectl delete daemonset rhaii-validator -n $(NAMESPACE) --ignore-not-found
+	-kubectl delete jobs -n $(NAMESPACE) -l app=rhaii-validate-check --ignore-not-found
 	-kubectl delete jobs -n $(NAMESPACE) -l app=rhaii-validate-job --ignore-not-found
 	-kubectl delete serviceaccount rhaii-validator -n $(NAMESPACE) --ignore-not-found
 	-kubectl delete clusterrolebinding rhaii-validator --ignore-not-found
@@ -112,7 +105,7 @@ clean-all: clean
 
 run-local:
 	@echo "Running agent locally on this node..."
-	go run ./cmd/agent/ run --no-wait --node-name $$(hostname)
+	go run ./cmd/agent/ run --node-name $$(hostname)
 
 fmt:
 	go fmt ./...

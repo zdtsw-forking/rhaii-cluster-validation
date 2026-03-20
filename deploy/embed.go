@@ -2,10 +2,10 @@ package deploy
 
 import _ "embed"
 
-// DaemonSetYAML is the embedded agent DaemonSet manifest.
+// NodeCheckJobYAML is the embedded per-node check Job manifest.
 //
-//go:embed daemonset.yaml
-var DaemonSetYAML []byte
+//go:embed node-check-job.yaml
+var NodeCheckJobYAML []byte
 
 // RBACYAML is the embedded RBAC manifest (ServiceAccount, ClusterRole, ClusterRoleBinding).
 //

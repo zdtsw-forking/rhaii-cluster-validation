@@ -3,6 +3,7 @@ package gpu
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/checks"
@@ -31,7 +32,7 @@ func (c *AMDDriverCheck) Run(ctx context.Context) checks.Result {
 		Name:     c.Name(),
 	}
 
-	output, err := hostExec(ctx, "rocm-smi", "--showdriverversion")
+	output, err := exec.CommandContext(ctx, "rocm-smi", "--showdriverversion").Output()
 	if err != nil {
 		r.Status = checks.StatusFail
 		r.Message = fmt.Sprintf("rocm-smi failed: %v", err)
@@ -47,11 +48,11 @@ func (c *AMDDriverCheck) Run(ctx context.Context) checks.Result {
 	}
 
 	// Get GPU info
-	gpuOutput, _ := hostExec(ctx, "rocm-smi", "--showproductname")
+	gpuOutput, _ := exec.CommandContext(ctx, "rocm-smi", "--showproductname").Output()
 	gpuName := parseROCmGPUName(string(gpuOutput))
 
 	// Get GPU count
-	countOutput, _ := hostExec(ctx, "rocm-smi", "--showid")
+	countOutput, _ := exec.CommandContext(ctx, "rocm-smi", "--showid").Output()
 	gpuCount := countROCmGPUs(string(countOutput))
 
 	r.Details = map[string]any{

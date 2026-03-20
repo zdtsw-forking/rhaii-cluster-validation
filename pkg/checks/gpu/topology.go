@@ -3,6 +3,7 @@ package gpu
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -10,6 +11,14 @@ import (
 
 	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/checks"
 )
+
+// chrootHostExec runs a command on the host filesystem via chroot /host.
+// Used for sysfs reads that need access to host device topology.
+func chrootHostExec(ctx context.Context, name string, args ...string) ([]byte, error) {
+	chrootArgs := []string{"/host", name}
+	chrootArgs = append(chrootArgs, args...)
+	return exec.CommandContext(ctx, "chroot", chrootArgs...).Output()
+}
 
 // TopologyCheck discovers GPU-NIC-NUMA mapping on the node via nsenter.
 type TopologyCheck struct {
@@ -85,9 +94,9 @@ type nicInfo struct {
 // discoverGPUs uses nvidia-smi to get GPU IDs and their NUMA nodes.
 func discoverGPUs(ctx context.Context) ([]gpuInfo, error) {
 	// Get GPU index and name
-	output, err := hostExec(ctx, "nvidia-smi",
+	output, err := exec.CommandContext(ctx, "nvidia-smi",
 		"--query-gpu=index,gpu_name",
-		"--format=csv,noheader,nounits")
+		"--format=csv,noheader,nounits").Output()
 	if err != nil {
 		return nil, fmt.Errorf("nvidia-smi failed: %w", err)
 	}
@@ -105,7 +114,7 @@ func discoverGPUs(ctx context.Context) ([]gpuInfo, error) {
 		name := strings.TrimSpace(fields[1])
 
 		// Get NUMA node from sysfs (ID validated as integer above, safe for path)
-		numaOutput, err := hostExec(ctx, "cat",
+		numaOutput, err := chrootHostExec(ctx, "cat",
 			fmt.Sprintf("/sys/class/nvidia/nvidia%d/numa_node", id))
 		numa := -1
 		if err == nil {
@@ -120,7 +129,7 @@ func discoverGPUs(ctx context.Context) ([]gpuInfo, error) {
 
 // discoverNICs finds RDMA devices and their NUMA nodes from sysfs.
 func discoverNICs(ctx context.Context) ([]nicInfo, error) {
-	output, err := hostExec(ctx, "ls", "/sys/class/infiniband/")
+	output, err := chrootHostExec(ctx, "ls", "/sys/class/infiniband/")
 	if err != nil {
 		return nil, fmt.Errorf("no infiniband devices: %w", err)
 	}
@@ -134,7 +143,7 @@ func discoverNICs(ctx context.Context) ([]nicInfo, error) {
 
 		// Get NUMA node
 		numaPath := filepath.Join("/sys/class/infiniband", dev, "device/numa_node")
-		numaOutput, err := hostExec(ctx, "cat", numaPath)
+		numaOutput, err := chrootHostExec(ctx, "cat", numaPath)
 		numa := -1
 		if err == nil {
 			numa, _ = strconv.Atoi(strings.TrimSpace(string(numaOutput)))
