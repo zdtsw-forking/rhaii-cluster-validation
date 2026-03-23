@@ -40,7 +40,7 @@ jobs:
           IMG_LATEST=ghcr.io/${{ github.repository_owner }}/rhaii-validator:latest
 
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker build --build-arg VERSION=${VERSION} -t ${IMG} -t ${IMG_LATEST} .
+          docker build -f Dockerfile.dev --build-arg VERSION=${VERSION} --build-arg DEFAULT_IMAGE=${IMG} -t ${IMG} -t ${IMG_LATEST} .
           docker push ${IMG}
           docker push ${IMG_LATEST}
 

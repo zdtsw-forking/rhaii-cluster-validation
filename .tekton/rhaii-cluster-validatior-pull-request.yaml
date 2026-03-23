@@ -28,7 +28,10 @@ spec:
   - name: image-expires-after
     value: 5d
   - name: dockerfile
-    value: Dockerfile
+    value: Dockerfile.konflux
+  - name: build-args
+    value:
+    - DEFAULT_IMAGE=quay.io/opendatahub/rhaii-validator:latest
   pipelineSpec:
     description: |
       This pipeline is ideal for building container images from a Containerfile while maintaining trust after pipeline customization.

@@ -69,7 +69,7 @@ jobs:
           "
 
       - name: Build container image
-        run: docker build -t rhaii-validator:ci .
+        run: docker build -f Dockerfile.dev -t rhaii-validator:ci .
 
       - name: Run container e2e (expect check failures, no runtime errors)
         run: |

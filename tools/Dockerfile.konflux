@@ -1,0 +1,58 @@
+# CUDA base image (UBI9-based, includes CUDA devel + runtime, sha-pinned)
+FROM quay.io/aipcc/base-images/cuda-13.0-el9.6@sha256:ce49998e43722e001013d534342d10a06263e3294af8c4bdb8ffe76496fb99d2 AS builder
+
+# Tool versions (pinned for reproducibility)
+ARG PERFTEST_VERSION=25.10.0-0.128
+
+# Needed with aipcc image
+USER root
+
+# Install build dependencies
+RUN dnf install -y \
+    git gcc gcc-c++ make autoconf automake libtool diffutils \
+    pciutils-devel \
+    rdma-core-devel libibverbs-devel librdmacm-devel libibumad-devel \
+    && dnf clean all
+
+# Build perftest with CUDA support
+RUN git clone --branch ${PERFTEST_VERSION} --depth 1 https://github.com/linux-rdma/perftest.git /tmp/perftest && \
+    cd /tmp/perftest && \
+    ./autogen.sh && \
+    CUDA_H_PATH=/usr/local/cuda/include ./configure --prefix=/usr --enable-cudart && \
+    make -j$(nproc) && \
+    make install DESTDIR=/install
+
+# Runtime stage
+FROM quay.io/aipcc/base-images/cuda-13.0-el9.6@sha256:ce49998e43722e001013d534342d10a06263e3294af8c4bdb8ffe76496fb99d2
+
+LABEL name="rhoai/odh-rhaii-validator-tools-rhel9" \
+      com.redhat.component="odh-rhaii-validator-tools-rhel9" \
+      summary="RHAII Validator Tools" \
+      description="RDMA and network bandwidth testing tools (iperf3, perftest) with CUDA support for preflight validation of xKS clusters before AI workload deployment" \
+      maintainer="Red Hat LLM-D Team" \
+      io.k8s.display-name="RHAII Validator Tools" \
+      io.k8s.description="RDMA and network bandwidth testing tools (iperf3, perftest) with CUDA support for preflight validation of xKS clusters before AI workload deployment"
+
+# Root required: RDMA perftest (ib_write_bw, ib_read_bw) and GPU bandwidth tools
+# need direct access to InfiniBand/RoCE devices and CUDA runtime.
+USER root
+
+WORKDIR /root
+
+# Install runtime utilities
+RUN dnf install -y \
+    wget procps-ng jq bc iputils ethtool net-tools \
+    numactl kmod systemd-udev libpcap python3 hostname \
+    iperf3 tcpdump pciutils \
+    && dnf clean all
+
+# Install RDMA libraries
+RUN dnf install -y libibverbs libibumad librdmacm && dnf clean all
+
+# Copy perftest binaries from builder
+COPY --from=builder /install/usr/bin/* /usr/local/bin/
+
+# Create results directory
+RUN mkdir -p /results
+
+CMD ["/bin/bash"]

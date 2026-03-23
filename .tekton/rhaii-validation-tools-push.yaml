@@ -25,7 +25,7 @@ spec:
   - name: output-image
     value: quay.io/redhat-user-workloads/open-data-hub-tenant/rhaii-validation-tools:{{revision}}
   - name: dockerfile
-    value: Dockerfile.rdma-tools
+    value: tools/Dockerfile.konflux
   pipelineSpec:
     description: |
       This pipeline is ideal for building container images from a Containerfile while maintaining trust after pipeline customization.

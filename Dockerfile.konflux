@@ -1,0 +1,37 @@
+# Build stage
+FROM registry.access.redhat.com/ubi9/go-toolset@sha256:8b211cc8793d8013140844e8070aa584a8eb3e4e6e842ea4b03dd9914b1a5dc6 AS builder
+
+WORKDIR /opt/app-root/src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+ARG VERSION=dev
+ARG DEFAULT_IMAGE=quay.io/opendatahub/rhaii-validator:latest
+RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags "-X main.version=${VERSION} -X main.defaultImage=${DEFAULT_IMAGE}" -o /opt/app-root/rhaii-validator ./cmd/agent/
+
+# Runtime stage
+FROM registry.access.redhat.com/ubi9/ubi@sha256:1fc04e873cb3f3c8d1211729a794716e50826f650ea88b97a4ff57f601db77a8
+
+LABEL name="rhoai/odh-rhaii-cluster-validator-rhel9" \
+      com.redhat.component="odh-rhaii-cluster-validator-rhel9" \
+      summary="RHAII Cluster Validator" \
+      description="Preflight validation probe for xKS clusters - verifies GPU availability, RDMA connectivity, network bandwidth, required CRDs, and inference readiness before AI workload deployment" \
+      maintainer="Red Hat LLM-D Team" \
+      io.k8s.display-name="RHAII Cluster Validator" \
+      io.k8s.description="Preflight validation probe for xKS clusters - verifies GPU availability, RDMA connectivity, network bandwidth, required CRDs, and inference readiness before AI workload deployment"
+
+# Install tools needed by the agent
+RUN dnf install -y \
+      util-linux \
+      pciutils \
+      && dnf clean all
+
+COPY --from=builder /opt/app-root/rhaii-validator /usr/local/bin/rhaii-validator
+
+# TODO: evaluate if non-root (USER 1001) is viable — topology checks and
+# ib_write_bw may require root for device access when running in 'run' mode.
+USER 0
+
+ENTRYPOINT ["rhaii-validator"]

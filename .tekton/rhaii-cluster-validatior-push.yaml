@@ -25,7 +25,10 @@ spec:
   - name: output-image
     value: quay.io/redhat-user-workloads/open-data-hub-tenant/rhaii-cluster-validatior:{{revision}}
   - name: dockerfile
-    value: Dockerfile
+    value: Dockerfile.konflux
+  - name: build-args
+    value:
+    - DEFAULT_IMAGE=quay.io/opendatahub/rhaii-validator:latest
   pipelineSpec:
     description: |
       This pipeline is ideal for building container images from a Containerfile while maintaining trust after pipeline customization.

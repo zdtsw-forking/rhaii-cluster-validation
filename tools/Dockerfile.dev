@@ -39,7 +39,16 @@ RUN git clone --branch ${PERFTEST_VERSION} --depth 1 https://github.com/linux-rd
 # ============================================================================
 FROM ${RUNTIME_IMAGE}
 
-# Needed with aipcc image
+LABEL name="rhoai/odh-rhaii-validator-tools-rhel9" \
+      com.redhat.component="odh-rhaii-validator-tools-rhel9" \
+      summary="RHAII Validator Tools" \
+      description="RDMA and network bandwidth testing tools (iperf3, perftest) with CUDA support for preflight validation of xKS clusters before AI workload deployment" \
+      maintainer="Red Hat LLM-D Team" \
+      io.k8s.display-name="RHAII Validator Tools" \
+      io.k8s.description="RDMA and network bandwidth testing tools (iperf3, perftest) with CUDA support for preflight validation of xKS clusters before AI workload deployment"
+
+# Root required: RDMA perftest (ib_write_bw, ib_read_bw) and GPU bandwidth tools
+# need direct access to InfiniBand/RoCE devices and CUDA runtime.
 USER root
 
 WORKDIR /root
