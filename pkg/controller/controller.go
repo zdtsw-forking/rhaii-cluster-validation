@@ -28,8 +28,9 @@ import (
 )
 
 const (
-	checkJobLabelKey   = "app"
-	checkJobLabelValue = "rhaii-validate-check"
+	checkJobLabelKey       = "app"
+	gpuCheckJobLabelValue = "rhaii-validate-gpu-check"
+	netCheckJobLabelValue = "rhaii-validate-net-check"
 	configMapName      = "rhaii-validate-config"
 	reportCMName       = "rhaii-validate-report"
 	defaultTimeout     = 5 * time.Minute
@@ -165,9 +166,10 @@ func (c *Controller) printDebugHelp(ctx context.Context) {
 	fmt.Fprintln(c.output, "Jobs kept alive for debugging.")
 	fmt.Fprintln(c.output, "")
 
-	// List all validation jobs (check + bandwidth)
+	// List all validation jobs (GPU check + net check + bandwidth)
 	for _, selector := range []string{
-		checkJobLabelKey + "=" + checkJobLabelValue,
+		checkJobLabelKey + "=" + gpuCheckJobLabelValue,
+		checkJobLabelKey + "=" + netCheckJobLabelValue,
 		"app=rhaii-validate-job",
 	} {
 		jobs, err := c.client.BatchV1().Jobs(ns).List(ctx, metav1.ListOptions{
@@ -183,9 +185,10 @@ func (c *Controller) printDebugHelp(ctx context.Context) {
 		fmt.Fprintln(c.output)
 	}
 
-	// List pods from check jobs
+	// List pods from check jobs (GPU + networking)
+	allCheckSelector := checkJobLabelKey + " in (" + gpuCheckJobLabelValue + "," + netCheckJobLabelValue + ")"
 	pods, err := c.client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
-		LabelSelector: checkJobLabelKey + "=" + checkJobLabelValue,
+		LabelSelector: allCheckSelector,
 	})
 	if err == nil && len(pods.Items) > 0 {
 		fmt.Fprintln(c.output, "Check pods:")
@@ -216,7 +219,8 @@ func (c *Controller) Cleanup() error {
 
 	propagation := metav1.DeletePropagationBackground
 	for _, selector := range []string{
-		checkJobLabelKey + "=" + checkJobLabelValue,
+		checkJobLabelKey + "=" + gpuCheckJobLabelValue,
+		checkJobLabelKey + "=" + netCheckJobLabelValue,
 		"app=rhaii-validate-job",
 	} {
 		jobs, err := c.client.BatchV1().Jobs(c.opts.Namespace).List(ctx, metav1.ListOptions{
@@ -279,9 +283,10 @@ func (c *Controller) Run(ctx context.Context) error {
 	fmt.Fprintln(c.output, "=== RHAII Cluster Validation ===")
 	fmt.Fprintln(c.output)
 
-	// Step 1: Cleanup previous runs (check jobs + bandwidth jobs)
+	// Step 1: Cleanup previous runs (GPU check + net check + bandwidth jobs)
 	fmt.Fprintln(c.output, "[Step 1] Cleaning up previous runs...")
-	c.cleanupCheckJobs(ctx)
+	c.cleanupGpuCheckJobs(ctx)
+	c.cleanupNetCheckJobs(ctx)
 	c.cleanupBandwidthJobs(ctx)
 
 	// Step 2: Ensure namespace exists
@@ -327,50 +332,86 @@ func (c *Controller) Run(ctx context.Context) error {
 		}
 	}
 
-	// Step 6: Deploy per-node check Jobs
-	var reports []checks.NodeReport
-	needChecks := c.opts.CheckMode == "gpu" || c.opts.CheckMode == "all"
-	if needChecks {
-		fmt.Fprintln(c.output, "[Step 6] Deploying per-node check Jobs...")
-		if err := c.deployCheckJobs(ctx); err != nil {
-			return fmt.Errorf("failed to deploy check jobs: %w", err)
+	// Step 6: Deploy per-node GPU check Jobs
+	var gpuReports []checks.NodeReport
+	needGpuChecks := c.opts.CheckMode == "gpu" || c.opts.CheckMode == "all"
+	if needGpuChecks {
+		fmt.Fprintln(c.output, "[Step 6] Deploying per-node GPU check Jobs...")
+		if err := c.deployGpuCheckJobs(ctx); err != nil {
+			return fmt.Errorf("failed to deploy GPU check jobs: %w", err)
 		}
 
-		// Step 7: Wait for check Jobs and collect results
-		fmt.Fprintln(c.output, "[Step 7] Waiting for check Jobs to complete...")
-		reports, err = c.waitAndCollectCheckJobs(ctx)
+		fmt.Fprintln(c.output, "[Step 6] Waiting for GPU check Jobs to complete...")
+		gpuReports, err = c.waitAndCollectGpuCheckJobs(ctx)
 		if err != nil {
-			fmt.Fprintf(c.output, "  Warning: collection error: %v\n", err)
+			fmt.Fprintf(c.output, "  Warning: GPU check collection error: %v\n", err)
 		}
 
-		// Clean up check jobs to free GPUs before bandwidth tests
 		if !c.opts.Debug {
-			c.cleanupCheckJobs(ctx)
+			c.cleanupGpuCheckJobs(ctx)
 		}
 	}
 
-	// Step 8: Run multi-node jobs (automatically when 2+ GPU nodes and jobs registered)
+	// Step 7: Deploy per-node networking check Jobs (topology + RDMA)
+	var netReports []checks.NodeReport
+	needNetChecks := c.opts.CheckMode == "networking" || c.opts.CheckMode == "net-checks" || c.opts.CheckMode == "all"
+	if needNetChecks {
+		fmt.Fprintln(c.output, "[Step 7] Deploying per-node networking check Jobs...")
+		if err := c.deployNetCheckJobs(ctx); err != nil {
+			return fmt.Errorf("failed to deploy networking check jobs: %w", err)
+		}
+
+		fmt.Fprintln(c.output, "[Step 7] Waiting for networking check Jobs to complete...")
+		netReports, err = c.waitAndCollectNetCheckJobs(ctx)
+		if err != nil {
+			fmt.Fprintf(c.output, "  Warning: networking check collection error: %v\n", err)
+		}
+
+		if !c.opts.Debug {
+			c.cleanupNetCheckJobs(ctx)
+		}
+	}
+
+	// Step 8: Run multi-node bandwidth jobs (using topology from networking reports)
 	var jobResults []jobrunner.JobResult
-	if len(c.jobs) > 0 && len(gpuNodes) >= 2 {
+	needBandwidth := c.opts.CheckMode == "networking" || c.opts.CheckMode == "net-bandwidth" || c.opts.CheckMode == "all"
+	if needBandwidth && len(c.jobs) > 0 && len(gpuNodes) >= 2 {
+		// If net checks didn't run this session, load topology from stored report
+		if len(netReports) == 0 {
+			storedTopo, topoErr := c.loadTopologyFromReport(ctx)
+			if topoErr != nil {
+				fmt.Fprintf(c.output, "  Warning: %v\n", topoErr)
+				fmt.Fprintln(c.output, "  Hint: run 'kubectl rhaii-validate net-checks' first to generate topology")
+			} else {
+				for node, topo := range storedTopo {
+					netReports = append(netReports, checks.NodeReport{Node: node, Topology: topo})
+				}
+				fmt.Fprintf(c.output, "  Loaded topology for %d node(s) from stored report\n", len(storedTopo))
+			}
+		}
+
 		fmt.Fprintln(c.output, "[Step 8] Running multi-node tests...")
-		jr, err := c.runBandwidthJobs(ctx, gpuNodes, reports)
+		jr, err := c.runBandwidthJobs(ctx, gpuNodes, netReports)
 		if err != nil {
 			fmt.Fprintf(c.output, "  Warning: bandwidth test error: %v\n", err)
 		}
 		jobResults = jr
 	}
 
+	// Merge GPU + networking reports for the combined report
+	allReports := mergeNodeReports(gpuReports, netReports)
+
 	// Store report in ConfigMap (persists after cleanup)
-	if err := c.storeReport(ctx, reports, jobResults); err != nil {
+	if err := c.storeReport(ctx, allReports, jobResults); err != nil {
 		fmt.Fprintf(c.output, "  Warning: failed to store report: %v\n", err)
 	}
 
 	// Print report
 	var hasFailures bool
 	if c.opts.OutputFormat == "json" {
-		hasFailures = c.printJSONReport(reports, jobResults)
+		hasFailures = c.printJSONReport(allReports, jobResults)
 	} else {
-		hasFailures = c.printReport(reports, jobResults)
+		hasFailures = c.printReport(allReports, jobResults)
 	}
 
 	// Cleanup or keep for debugging
@@ -383,15 +424,24 @@ func (c *Controller) Run(ctx context.Context) error {
 		}
 	}
 
-	if len(reports) == 0 && len(gpuNodes) > 0 {
+	totalReports := len(gpuReports) + len(netReports)
+	if totalReports == 0 && len(gpuNodes) > 0 {
 		if c.opts.Debug {
 			return fmt.Errorf("failed to collect reports — pods kept alive for debugging")
 		}
 		return fmt.Errorf("failed to collect any reports from %d GPU node(s)", len(gpuNodes))
 	}
-	if len(reports) > 0 && len(reports) < len(gpuNodes) {
-		return fmt.Errorf("partial results: collected %d/%d nodes (some nodes may lack free GPU resources)",
-			len(reports), len(gpuNodes))
+	expectedReports := 0
+	if needGpuChecks {
+		expectedReports += len(gpuNodes)
+	}
+	if needNetChecks {
+		expectedReports += len(gpuNodes)
+	}
+	actualReports := len(gpuReports) + len(netReports)
+	if actualReports > 0 && actualReports < expectedReports {
+		return fmt.Errorf("partial results: collected %d/%d node reports (some nodes may lack free resources)",
+			actualReports, expectedReports)
 	}
 	if hasFailures {
 		return fmt.Errorf("validation failed: one or more checks reported FAIL")
@@ -667,11 +717,10 @@ func splitYAMLDocuments(data []byte) [][]byte {
 	return docs
 }
 
-// deployCheckJobs creates one Job per GPU node. Each Job requests all GPUs on
+// deployGpuCheckJobs creates one Job per GPU node. Each Job requests all GPUs on
 // the node so nvidia-smi (injected by the NVIDIA container runtime) can see
-// every GPU for driver and ECC checks. Jobs run sequentially (one node at a
-// time) to avoid GPU resource contention.
-func (c *Controller) deployCheckJobs(ctx context.Context) error {
+// every GPU for driver and ECC checks.
+func (c *Controller) deployGpuCheckJobs(ctx context.Context) error {
 	var jobTemplate batchv1.Job
 	if err := k8syaml.Unmarshal(deploy.NodeCheckJobYAML, &jobTemplate); err != nil {
 		return fmt.Errorf("failed to parse embedded node-check-job.yaml: %w", err)
@@ -687,6 +736,10 @@ func (c *Controller) deployCheckJobs(ctx context.Context) error {
 		}
 		job.Name = jobName
 		job.Namespace = c.opts.Namespace
+
+		// Override labels to GPU-check specific value
+		job.Labels[checkJobLabelKey] = gpuCheckJobLabelValue
+		job.Spec.Template.Labels[checkJobLabelKey] = gpuCheckJobLabelValue
 
 		container := &job.Spec.Template.Spec.Containers[0]
 		container.Image = c.opts.Image
@@ -732,21 +785,103 @@ func (c *Controller) deployCheckJobs(ctx context.Context) error {
 			container.Resources.Limits[corev1.ResourceName(k)] = qty
 		}
 
-		// Pass GPU vendor and check mode
-		checkMode := c.opts.CheckMode
-		if checkMode == "" {
-			checkMode = "all"
-		}
 		container.Env = append(container.Env,
 			corev1.EnvVar{Name: "GPU_VENDOR", Value: string(c.gpuVendor)},
-			corev1.EnvVar{Name: "CHECK_MODE", Value: checkMode},
+			corev1.EnvVar{Name: "CHECK_MODE", Value: "gpu"},
 		)
 
 		_, err := c.client.BatchV1().Jobs(c.opts.Namespace).Create(ctx, job, metav1.CreateOptions{})
 		if err != nil {
-			return fmt.Errorf("failed to create check job for node %s: %w", nodeName, err)
+			return fmt.Errorf("failed to create GPU check job for node %s: %w", nodeName, err)
 		}
-		fmt.Fprintf(c.output, "  Created check job %s (node: %s, GPUs: %d)\n", jobName, nodeName, gpuCount)
+		fmt.Fprintf(c.output, "  Created GPU check job %s (node: %s, GPUs: %d)\n", jobName, nodeName, gpuCount)
+	}
+	return nil
+}
+
+// deployNetCheckJobs creates one Job per GPU node for networking checks
+// (topology discovery, RDMA device checks, NIC status). Each Job requests
+// GPU resources (for nvidia-smi in topology) plus RDMA resources from the
+// platform-specific jobs config.
+func (c *Controller) deployNetCheckJobs(ctx context.Context) error {
+	var jobTemplate batchv1.Job
+	if err := k8syaml.Unmarshal(deploy.NodeCheckJobYAML, &jobTemplate); err != nil {
+		return fmt.Errorf("failed to parse embedded node-check-job.yaml: %w", err)
+	}
+
+	for _, nodeName := range c.gpuNodes {
+		job := jobTemplate.DeepCopy()
+
+		jobName := fmt.Sprintf("rhaii-validate-net-%s", sanitizeNodeName(nodeName))
+		if len(jobName) > 63 {
+			jobName = jobName[:63]
+		}
+		job.Name = jobName
+		job.Namespace = c.opts.Namespace
+
+		// Override labels to net-check specific value
+		job.Labels[checkJobLabelKey] = netCheckJobLabelValue
+		job.Spec.Template.Labels[checkJobLabelKey] = netCheckJobLabelValue
+
+		container := &job.Spec.Template.Spec.Containers[0]
+		container.Image = c.opts.Image
+
+		// Pin to specific node
+		job.Spec.Template.Spec.NodeSelector = map[string]string{
+			"kubernetes.io/hostname": nodeName,
+		}
+
+		if container.Resources.Requests == nil {
+			container.Resources.Requests = make(corev1.ResourceList)
+		}
+		if container.Resources.Limits == nil {
+			container.Resources.Limits = make(corev1.ResourceList)
+		}
+
+		// Request all GPUs (needed for nvidia-smi in topology discovery)
+		gpuCount := c.gpuCounts[nodeName]
+		if gpuCount > 0 && c.gpuResource != "" {
+			gpuQty := resource.MustParse(fmt.Sprintf("%d", gpuCount))
+			container.Resources.Requests[c.gpuResource] = gpuQty
+			container.Resources.Limits[c.gpuResource] = gpuQty
+		}
+
+		// Apply RDMA + cpu/memory resources from platform jobs config
+		for k, v := range c.cfg.Jobs.Requests {
+			qty, err := resource.ParseQuantity(v)
+			if err != nil {
+				return fmt.Errorf("invalid jobs resource %q for %s: %w", v, k, err)
+			}
+			container.Resources.Requests[corev1.ResourceName(k)] = qty
+		}
+		for k, v := range c.cfg.Jobs.Limits {
+			qty, err := resource.ParseQuantity(v)
+			if err != nil {
+				return fmt.Errorf("invalid jobs limit %q for %s: %w", v, k, err)
+			}
+			container.Resources.Limits[corev1.ResourceName(k)] = qty
+		}
+
+		// Apply annotations from platform jobs config
+		if len(c.cfg.Jobs.Annotations) > 0 {
+			if job.Spec.Template.Annotations == nil {
+				job.Spec.Template.Annotations = make(map[string]string)
+			}
+			for k, v := range c.cfg.Jobs.Annotations {
+				job.Spec.Template.Annotations[k] = v
+			}
+		}
+
+		container.Env = append(container.Env,
+			corev1.EnvVar{Name: "GPU_VENDOR", Value: string(c.gpuVendor)},
+			corev1.EnvVar{Name: "CHECK_MODE", Value: "networking"},
+		)
+
+		_, err := c.client.BatchV1().Jobs(c.opts.Namespace).Create(ctx, job, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to create networking check job for node %s: %w", nodeName, err)
+		}
+		fmt.Fprintf(c.output, "  Created networking check job %s (node: %s, GPUs: %d)\n", jobName, nodeName, gpuCount)
 	}
 	return nil
 }
@@ -763,14 +898,26 @@ func sanitizeNodeName(name string) string {
 	return strings.Trim(name, "-")
 }
 
-// waitAndCollectCheckJobs polls until all check Jobs have completed, then
-// reads the JSON report from each Job's pod logs.
-func (c *Controller) waitAndCollectCheckJobs(ctx context.Context) ([]checks.NodeReport, error) {
+// waitAndCollectGpuCheckJobs polls until all GPU check Jobs have completed,
+// then reads the JSON report from each Job's pod logs.
+func (c *Controller) waitAndCollectGpuCheckJobs(ctx context.Context) ([]checks.NodeReport, error) {
+	selector := checkJobLabelKey + "=" + gpuCheckJobLabelValue
+	return c.waitAndCollectJobsBySelector(ctx, selector, "GPU check")
+}
+
+// waitAndCollectNetCheckJobs polls until all networking check Jobs have completed,
+// then reads the JSON report from each Job's pod logs.
+func (c *Controller) waitAndCollectNetCheckJobs(ctx context.Context) ([]checks.NodeReport, error) {
+	selector := checkJobLabelKey + "=" + netCheckJobLabelValue
+	return c.waitAndCollectJobsBySelector(ctx, selector, "networking check")
+}
+
+// waitAndCollectJobsBySelector is the generic polling loop for check Jobs.
+func (c *Controller) waitAndCollectJobsBySelector(ctx context.Context, selector, jobKind string) ([]checks.NodeReport, error) {
 	timeout := time.After(c.opts.Timeout)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	selector := checkJobLabelKey + "=" + checkJobLabelValue
 	expected := len(c.gpuNodes)
 
 	for {
@@ -779,7 +926,7 @@ func (c *Controller) waitAndCollectCheckJobs(ctx context.Context) ([]checks.Node
 			return c.collectAvailableJobs(ctx, selector, ctx.Err())
 		case <-timeout:
 			return c.collectAvailableJobs(ctx, selector,
-				fmt.Errorf("timed out waiting for check jobs after %v", c.opts.Timeout))
+				fmt.Errorf("timed out waiting for %s jobs after %v", jobKind, c.opts.Timeout))
 		case <-ticker.C:
 			jobs, err := c.client.BatchV1().Jobs(c.opts.Namespace).List(ctx, metav1.ListOptions{
 				LabelSelector: selector,
@@ -799,7 +946,7 @@ func (c *Controller) waitAndCollectCheckJobs(ctx context.Context) ([]checks.Node
 				}
 			}
 
-			fmt.Fprintf(c.output, "  Check jobs completed: %d/%d", completed, expected)
+			fmt.Fprintf(c.output, "  %s jobs completed: %d/%d", jobKind, completed, expected)
 			if failed > 0 {
 				fmt.Fprintf(c.output, " (%d failed)", failed)
 			}
@@ -986,6 +1133,36 @@ func (c *Controller) runBandwidthJobs(ctx context.Context, gpuNodes []string, re
 	return append(results, jr...), err
 }
 
+// mergeNodeReports combines reports from multiple phases (e.g. GPU checks and
+// networking checks) into a single slice. Reports for the same node are merged
+// by appending results and taking whichever topology is non-nil.
+func mergeNodeReports(reportSets ...[]checks.NodeReport) []checks.NodeReport {
+	byNode := make(map[string]*checks.NodeReport)
+	var order []string
+
+	for _, reports := range reportSets {
+		for _, r := range reports {
+			existing, ok := byNode[r.Node]
+			if !ok {
+				copy := r
+				byNode[r.Node] = &copy
+				order = append(order, r.Node)
+			} else {
+				existing.Results = append(existing.Results, r.Results...)
+				if r.Topology != nil {
+					existing.Topology = r.Topology
+				}
+			}
+		}
+	}
+
+	var merged []checks.NodeReport
+	for _, name := range order {
+		merged = append(merged, *byNode[name])
+	}
+	return merged
+}
+
 // buildTopologyMap extracts topology from node reports, keyed by node name.
 func buildTopologyMap(reports []checks.NodeReport) map[string]*checks.NodeTopology {
 	m := make(map[string]*checks.NodeTopology)
@@ -995,6 +1172,34 @@ func buildTopologyMap(reports []checks.NodeReport) map[string]*checks.NodeTopolo
 		}
 	}
 	return m
+}
+
+// loadTopologyFromReport reads topology from the stored report ConfigMap.
+// Used by net-bandwidth mode to get topology without re-running net checks.
+func (c *Controller) loadTopologyFromReport(ctx context.Context) (map[string]*checks.NodeTopology, error) {
+	cm, err := c.client.CoreV1().ConfigMaps(c.opts.Namespace).Get(ctx, reportCMName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("no stored report found (ConfigMap %s/%s): %w", c.opts.Namespace, reportCMName, err)
+	}
+
+	reportJSON, ok := cm.Data["report.json"]
+	if !ok || reportJSON == "" {
+		return nil, fmt.Errorf("stored report ConfigMap has no report.json data")
+	}
+
+	var stored struct {
+		Nodes []checks.NodeReport `json:"nodes"`
+	}
+	if err := json.Unmarshal([]byte(reportJSON), &stored); err != nil {
+		return nil, fmt.Errorf("failed to parse stored report: %w", err)
+	}
+
+	topoMap := buildTopologyMap(stored.Nodes)
+	if len(topoMap) == 0 {
+		return nil, fmt.Errorf("stored report has no topology data")
+	}
+
+	return topoMap, nil
 }
 
 // expandRDMAJobs creates per-GPU-NIC RDMA jobs from topology.
@@ -1250,9 +1455,14 @@ func (c *Controller) ensureOpenShiftSCC(ctx context.Context) error {
 	return nil
 }
 
-// cleanupCheckJobs deletes all check jobs and waits for them to be fully removed.
-func (c *Controller) cleanupCheckJobs(ctx context.Context) {
-	c.deleteJobsBySelector(ctx, checkJobLabelKey+"="+checkJobLabelValue)
+// cleanupGpuCheckJobs deletes all GPU check jobs and waits for them to be fully removed.
+func (c *Controller) cleanupGpuCheckJobs(ctx context.Context) {
+	c.deleteJobsBySelector(ctx, checkJobLabelKey+"="+gpuCheckJobLabelValue)
+}
+
+// cleanupNetCheckJobs deletes all networking check jobs and waits for them to be fully removed.
+func (c *Controller) cleanupNetCheckJobs(ctx context.Context) {
+	c.deleteJobsBySelector(ctx, checkJobLabelKey+"="+netCheckJobLabelValue)
 }
 
 // cleanupBandwidthJobs deletes all bandwidth jobs and waits for them to be fully removed.
@@ -1291,7 +1501,8 @@ func (c *Controller) deleteJobsBySelector(ctx context.Context, selector string) 
 // cleanupAll removes check jobs, bandwidth jobs, and RBAC resources.
 // ConfigMap is preserved so users can edit and rerun without losing customizations.
 func (c *Controller) cleanupAll(ctx context.Context) error {
-	c.cleanupCheckJobs(ctx)
+	c.cleanupGpuCheckJobs(ctx)
+	c.cleanupNetCheckJobs(ctx)
 	c.cleanupBandwidthJobs(ctx)
 
 	for _, del := range []func() error{

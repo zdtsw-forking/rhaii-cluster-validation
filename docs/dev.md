@@ -234,7 +234,7 @@ func (c *TopologyCheck) Run(ctx context.Context) checks.Result {
 2. Register it in `cmd/agent/main.go` in the `run` subcommand:
 
 ```go
-r.AddCheck(gpu.NewTopologyCheck(nodeName))
+r.AddCheck(rdma.NewTopologyCheck(nodeName))
 ```
 
 3. Add a `_test.go` file with parsed output tests.

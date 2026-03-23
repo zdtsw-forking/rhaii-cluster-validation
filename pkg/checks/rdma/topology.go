@@ -1,4 +1,4 @@
-package gpu
+package rdma
 
 import (
 	"context"
@@ -11,14 +11,6 @@ import (
 
 	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/checks"
 )
-
-// chrootHostExec runs a command on the host filesystem via chroot /host.
-// Used for sysfs reads that need access to host device topology.
-func chrootHostExec(ctx context.Context, name string, args ...string) ([]byte, error) {
-	chrootArgs := []string{"/host", name}
-	chrootArgs = append(chrootArgs, args...)
-	return exec.CommandContext(ctx, "chroot", chrootArgs...).Output()
-}
 
 // TopologyCheck discovers GPU-NIC-NUMA mapping on the node via nsenter.
 type TopologyCheck struct {
@@ -114,7 +106,7 @@ func discoverGPUs(ctx context.Context) ([]gpuInfo, error) {
 		name := strings.TrimSpace(fields[1])
 
 		// Get NUMA node from sysfs (ID validated as integer above, safe for path)
-		numaOutput, err := chrootHostExec(ctx, "cat",
+		numaOutput, err := hostExec(ctx, "cat",
 			fmt.Sprintf("/sys/class/nvidia/nvidia%d/numa_node", id))
 		numa := -1
 		if err == nil {
@@ -129,7 +121,7 @@ func discoverGPUs(ctx context.Context) ([]gpuInfo, error) {
 
 // discoverNICs finds RDMA devices and their NUMA nodes from sysfs.
 func discoverNICs(ctx context.Context) ([]nicInfo, error) {
-	output, err := chrootHostExec(ctx, "ls", "/sys/class/infiniband/")
+	output, err := hostExec(ctx, "ls", "/sys/class/infiniband/")
 	if err != nil {
 		return nil, fmt.Errorf("no infiniband devices: %w", err)
 	}
@@ -143,7 +135,7 @@ func discoverNICs(ctx context.Context) ([]nicInfo, error) {
 
 		// Get NUMA node
 		numaPath := filepath.Join("/sys/class/infiniband", dev, "device/numa_node")
-		numaOutput, err := chrootHostExec(ctx, "cat", numaPath)
+		numaOutput, err := hostExec(ctx, "cat", numaPath)
 		numa := -1
 		if err == nil {
 			numa, _ = strconv.Atoi(strings.TrimSpace(string(numaOutput)))
