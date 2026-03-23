@@ -10,9 +10,9 @@ jobs:
   requests:
     cpu: "500m"
     memory: "512Mi"
-    rdma/ib: "8"
+    rdma/ib: "1"      # Boolean flag, not a count.
   limits:
-    rdma/ib: "8"
+    rdma/ib: "1"      # Boolean flag, not a count.
   annotations: {}
 
 gpu:

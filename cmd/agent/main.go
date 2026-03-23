@@ -40,6 +40,8 @@ func main() {
 
 	rootCmd.AddCommand(newGPUCmd())
 	rootCmd.AddCommand(newNetworkingCmd())
+	rootCmd.AddCommand(newNetChecksCmd())
+	rootCmd.AddCommand(newNetBandwidthCmd())
 	rootCmd.AddCommand(newAllCmd())
 	rootCmd.AddCommand(newDepsCmd())
 	rootCmd.AddCommand(newCleanCmd())
@@ -86,6 +88,52 @@ func newNetworkingCmd() *cobra.Command {
 Requires 2+ GPU nodes. Each node is tested as both sender and receiver.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.CheckMode = "networking"
+			return runDeploy(opts, func(ctrl *controller.Controller) {
+				ctrl.AddJob(networking.NewIperfJob(0, nil))
+				ctrl.AddJob(rdma.NewRDMABandwidthJob(0, nil))
+			})
+		},
+	}
+
+	addDeployFlags(cmd, &opts)
+	cmd.Flags().StringVar(&opts.ServerNode, "server-node", "", "Node to run server on (default: ring topology)")
+	cmd.Flags().StringSliceVar(&opts.ClientNodes, "client-nodes", nil, "Specific client nodes (default: all other GPU nodes)")
+	return cmd
+}
+
+// --- net-checks subcommand ---
+
+func newNetChecksCmd() *cobra.Command {
+	var opts controller.Options
+
+	cmd := &cobra.Command{
+		Use:   "net-checks",
+		Short: "Run per-node networking checks (topology, RDMA devices, NIC status)",
+		Long: `Runs per-node networking checks without bandwidth tests.
+Discovers GPU-NIC-NUMA topology, validates RDMA device presence, and checks NIC link status.
+Results are stored in the report ConfigMap for use by net-bandwidth.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.CheckMode = "net-checks"
+			return runDeploy(opts, func(ctrl *controller.Controller) {})
+		},
+	}
+
+	addDeployFlags(cmd, &opts)
+	return cmd
+}
+
+// --- net-bandwidth subcommand ---
+
+func newNetBandwidthCmd() *cobra.Command {
+	var opts controller.Options
+
+	cmd := &cobra.Command{
+		Use:   "net-bandwidth",
+		Short: "Run multi-node bandwidth tests (iperf3, RDMA)",
+		Long: `Runs multi-node bandwidth tests using topology from a previous net-checks or networking run.
+Requires 2+ GPU nodes. Uses stored report for GPU-NIC topology mapping.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.CheckMode = "net-bandwidth"
 			return runDeploy(opts, func(ctrl *controller.Controller) {
 				ctrl.AddJob(networking.NewIperfJob(0, nil))
 				ctrl.AddJob(rdma.NewRDMABandwidthJob(0, nil))
@@ -263,7 +311,7 @@ func newRunCmd() *cobra.Command {
 			}
 
 			if checkMode == "networking" || checkMode == "all" {
-				r.AddCheck(gpu.NewTopologyCheck(nodeName))
+				r.AddCheck(rdma.NewTopologyCheck(nodeName))
 				r.AddCheck(rdma.NewDevicesCheck(nodeName))
 				r.AddCheck(rdma.NewStatusCheck(nodeName))
 			}
