@@ -301,8 +301,8 @@ func newRunCmd() *cobra.Command {
 
 			cfg, err := config.Load(config.PlatformUnknown, configFile)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to load config: %v, using defaults\n", err)
-				cfg, _ = config.GetConfig(config.PlatformAKS)
+				fmt.Fprintf(os.Stderr, "Warning: failed to load config override: %v, using platform defaults\n", err)
+				cfg, _ = config.GetConfig(config.PlatformUnknown)
 			}
 			fmt.Fprintf(os.Stderr, "Platform config: %s\n", cfg.Platform)
 

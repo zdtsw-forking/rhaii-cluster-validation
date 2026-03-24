@@ -97,9 +97,17 @@ func NewChecker(client kubernetes.Interface, crds []CRDSpec, minAPIVersions, min
 	for i := range crds {
 		if v, ok := minAPIVersions[crds[i].Name]; ok && v != "" {
 			crds[i].MinAPIVersion = v
+		} else if crds[i].FallbackName != "" {
+			if v, ok := minAPIVersions[crds[i].FallbackName]; ok && v != "" {
+				crds[i].MinAPIVersion = v
+			}
 		}
 		if v, ok := minReleaseVersions[crds[i].Name]; ok && v != "" {
 			crds[i].MinReleaseVersion = v
+		} else if crds[i].FallbackName != "" {
+			if v, ok := minReleaseVersions[crds[i].FallbackName]; ok && v != "" {
+				crds[i].MinReleaseVersion = v
+			}
 		}
 	}
 	return &Checker{client: client, crds: crds}
@@ -132,6 +140,9 @@ func (c *Checker) fetchCRD(ctx context.Context, spec CRDSpec) ([]byte, string, e
 			Raw()
 		if fallbackErr == nil {
 			return fallbackRaw, spec.FallbackName, nil
+		}
+		if !apierrors.IsNotFound(fallbackErr) {
+			return nil, spec.FallbackName, fallbackErr
 		}
 	}
 	return nil, spec.Name, err

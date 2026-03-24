@@ -104,8 +104,8 @@ func (c *Controller) RunDeps(ctx context.Context) error {
 	c.platform = config.DetectPlatform(ctx, c.client)
 	cfg, err := config.Load(c.platform, c.opts.ConfigFile)
 	if err != nil {
-		fmt.Fprintf(log, "  Warning: failed to load config: %v, using defaults\n", err)
-		cfg, _ = config.GetConfig(config.PlatformAKS)
+		fmt.Fprintf(log, "  Warning: failed to load config override: %v, using platform defaults\n", err)
+		cfg, _ = config.GetConfig(c.platform)
 	}
 	c.cfg = cfg
 	fmt.Fprintf(log, "  Platform: %s\n", c.platform)
