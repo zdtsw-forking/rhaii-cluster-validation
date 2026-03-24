@@ -368,20 +368,21 @@ func isFlat(gpus []gpuInfo, nics []nicInfo) bool {
 	return true
 }
 
-// hasPCIePaths returns true if at least some devices have multi-segment
-// PCIe path information suitable for distance calculations.
-func hasPCIePaths(gpus []gpuInfo, nics []nicInfo) bool {
+// allHavePCIePaths returns true only if every GPU and NIC has a multi-segment
+// PCIe path. If any device is missing path data, distance-based strategies
+// would assign dist=0 to those pairs, making them look artificially close.
+func allHavePCIePaths(gpus []gpuInfo, nics []nicInfo) bool {
 	for _, g := range gpus {
-		if len(g.pciePath) >= 2 {
-			return true
+		if len(g.pciePath) < 2 {
+			return false
 		}
 	}
 	for _, n := range nics {
-		if len(n.pciePath) >= 2 {
-			return true
+		if len(n.pciePath) < 2 {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -397,7 +398,7 @@ func buildPairs(gpus []gpuInfo, nics []nicInfo) ([]checks.GPUNICPair, bool, stri
 	}
 
 	flat := isFlat(gpus, nics)
-	if flat || !hasPCIePaths(gpus, nics) {
+	if flat || !allHavePCIePaths(gpus, nics) {
 		return numaAffinityPairing(gpus, nics), flat, "numa_affinity"
 	}
 
