@@ -17,6 +17,12 @@ import (
 // boundaries, making cross-NUMA assignments immediately visible in output.
 const crossNUMAPenalty = 100
 
+// unknownPathPenalty is the PCIe distance assigned when one or both devices
+// lack sysfs path data. Set between typical within-NUMA distances (~2-12)
+// and the cross-NUMA penalty (100), so unknown-path devices sort after real
+// matches but before cross-NUMA fallbacks.
+const unknownPathPenalty = 50
+
 // TopologyCheck discovers GPU-NIC-NUMA-PCIe mapping on the node.
 type TopologyCheck struct {
 	nodeName string
@@ -368,21 +374,22 @@ func isFlat(gpus []gpuInfo, nics []nicInfo) bool {
 	return true
 }
 
-// allHavePCIePaths returns true only if every GPU and NIC has a multi-segment
-// PCIe path. If any device is missing path data, distance-based strategies
-// would assign dist=0 to those pairs, making them look artificially close.
-func allHavePCIePaths(gpus []gpuInfo, nics []nicInfo) bool {
+// hasPCIePaths returns true if at least some devices have multi-segment
+// PCIe path information suitable for distance calculations. Devices without
+// paths get unknownPathPenalty in buildCandidates, preventing them from
+// appearing artificially close.
+func hasPCIePaths(gpus []gpuInfo, nics []nicInfo) bool {
 	for _, g := range gpus {
-		if len(g.pciePath) < 2 {
-			return false
+		if len(g.pciePath) >= 2 {
+			return true
 		}
 	}
 	for _, n := range nics {
-		if len(n.pciePath) < 2 {
-			return false
+		if len(n.pciePath) >= 2 {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +405,7 @@ func buildPairs(gpus []gpuInfo, nics []nicInfo) ([]checks.GPUNICPair, bool, stri
 	}
 
 	flat := isFlat(gpus, nics)
-	if flat || !allHavePCIePaths(gpus, nics) {
+	if flat || !hasPCIePaths(gpus, nics) {
 		return numaAffinityPairing(gpus, nics), flat, "numa_affinity"
 	}
 
@@ -561,9 +568,11 @@ func numaLoadBalancePairing(gpus []gpuInfo, nics []nicInfo) []checks.GPUNICPair 
 				continue
 			}
 			nic := allNICs[fallbackIdx%len(allNICs)]
-			dist := 0
+			var dist int
 			if len(g.pciePath) >= 2 && len(nic.pciePath) >= 2 {
 				dist = pcieDistance(g.pciePath, nic.pciePath)
+			} else {
+				dist = unknownPathPenalty
 			}
 			pairs = append(pairs, makePair(g, nic, dist+crossNUMAPenalty))
 			fallbackIdx++
@@ -591,9 +600,11 @@ func buildCandidates(gpus []gpuInfo, nics []nicInfo) []pairCandidate {
 	var candidates []pairCandidate
 	for _, g := range gpus {
 		for _, n := range nics {
-			dist := 0
+			var dist int
 			if len(g.pciePath) >= 2 && len(n.pciePath) >= 2 {
 				dist = pcieDistance(g.pciePath, n.pciePath)
+			} else {
+				dist = unknownPathPenalty
 			}
 			candidates = append(candidates, pairCandidate{gpu: g, nic: n, dist: dist})
 		}
