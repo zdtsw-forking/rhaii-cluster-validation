@@ -39,6 +39,22 @@ type ResourceConfig struct {
 	Limits      map[string]string `yaml:"limits,omitempty" json:"limits,omitempty"`
 	Annotations map[string]string `yaml:"annotations,omitempty" json:"annotations,omitempty"`
 	RDMAType    string            `yaml:"rdma_type,omitempty" json:"rdma_type,omitempty"`
+	RDMA        RDMAJobConfig     `yaml:"rdma,omitempty" json:"rdma,omitempty"`
+}
+
+// RDMAJobConfig holds ib_write_bw test parameters.
+// Zero values mean "use defaults" (QPs=4, MessageSize=1MiB).
+type RDMAJobConfig struct {
+	QPs         int `yaml:"qps,omitempty" json:"qps,omitempty"`
+	MessageSize int `yaml:"message_size,omitempty" json:"message_size,omitempty"`
+}
+
+// Validate checks that user-provided config values are well-formed.
+func (c PlatformConfig) Validate() error {
+	if rt := c.Jobs.RDMAType; rt != "" && rt != "ib" && rt != "roce" {
+		return fmt.Errorf("invalid jobs.rdma_type %q: must be \"ib\", \"roce\", or empty", rt)
+	}
+	return nil
 }
 
 // GPUVendor represents the GPU hardware vendor.

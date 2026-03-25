@@ -47,5 +47,9 @@ func Load(platform Platform, configFile string) (PlatformConfig, error) {
 		return cfg, fmt.Errorf("failed to parse config file %s: %w", overrideFile, err)
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return cfg, fmt.Errorf("config validation failed: %w", err)
+	}
+
 	return cfg, nil
 }
