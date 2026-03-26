@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/checks"
+	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/config"
 )
 
 // crossNUMAPenalty is added to PCIeHops when a GPU-NIC pair crosses NUMA
@@ -27,11 +28,11 @@ const unknownPathPenalty = 50
 // TopologyCheck discovers GPU-NIC-NUMA-PCIe mapping on the node.
 type TopologyCheck struct {
 	nodeName string
-	rdmaMode string // "ib", "roce", or "" (all)
+	rdmaType string // "ib", "roce", or "" (all)
 }
 
-func NewTopologyCheck(nodeName, rdmaMode string) *TopologyCheck {
-	return &TopologyCheck{nodeName: nodeName, rdmaMode: rdmaMode}
+func NewTopologyCheck(nodeName, rdmaType string) *TopologyCheck {
+	return &TopologyCheck{nodeName: nodeName, rdmaType: rdmaType}
 }
 
 func (c *TopologyCheck) Name() string     { return "gpu_nic_topology" }
@@ -53,7 +54,7 @@ func (c *TopologyCheck) Run(ctx context.Context) checks.Result {
 		return r
 	}
 
-	nics, err := discoverNICs(ctx, c.rdmaMode)
+	nics, err := discoverNICs(ctx, c.rdmaType)
 	if err != nil {
 		r.Status = checks.StatusSkip
 		r.Message = fmt.Sprintf("NIC discovery failed: %v", err)
@@ -77,7 +78,7 @@ func (c *TopologyCheck) Run(ctx context.Context) checks.Result {
 	switch {
 	case len(nics) == 0:
 		r.Status = checks.StatusWarn
-		r.Message = fmt.Sprintf("%d GPU(s), 0 NIC(s): no RDMA NICs found matching rdma_type=%q", len(gpus), c.rdmaMode)
+		r.Message = fmt.Sprintf("%d GPU(s), 0 NIC(s): no RDMA NICs found matching rdma_type=%q", len(gpus), c.rdmaType)
 		return r
 	case len(gpus) > len(nics):
 		r.Status = checks.StatusWarn
@@ -235,10 +236,10 @@ func discoverAMDGPUs(ctx context.Context) ([]checks.GPUInfo, error) {
 // ---------------------------------------------------------------------------
 
 // discoverNICs finds RDMA devices with PCIe addresses and link layer type.
-// rdmaMode filters by link type: "ib" keeps InfiniBand, "roce" keeps Ethernet,
+// rdmaType filters by link type: "ib" keeps InfiniBand, "roce" keeps Ethernet,
 // empty keeps all.
-func discoverNICs(ctx context.Context, rdmaMode string) ([]checks.NICInfo, error) {
-	rdmaMode = checks.NormalizeRDMAMode(rdmaMode)
+func discoverNICs(ctx context.Context, rdmaType string) ([]checks.NICInfo, error) {
+	rdmaType = checks.NormalizeRDMAType(rdmaType)
 	output, err := sysfsExec(ctx, "ls", "/sys/class/infiniband/")
 	if err != nil {
 		return nil, fmt.Errorf("no infiniband devices: %w", err)
@@ -281,10 +282,10 @@ func discoverNICs(ctx context.Context, rdmaMode string) ([]checks.NICInfo, error
 			pciAddr = ""
 			pciePath = nil
 		}
-		if rdmaMode == "ib" && linkLayer != checks.LinkLayerInfiniBand {
+		if rdmaType == string(config.RDMATypeIB) && linkLayer != checks.LinkLayerInfiniBand {
 			continue
 		}
-		if rdmaMode == "roce" && linkLayer != checks.LinkLayerEthernet {
+		if rdmaType == string(config.RDMATypeRoCE) && linkLayer != checks.LinkLayerEthernet {
 			continue
 		}
 

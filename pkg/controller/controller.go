@@ -874,7 +874,7 @@ func (c *Controller) deployNetCheckJobs(ctx context.Context) error {
 		container.Env = append(container.Env,
 			corev1.EnvVar{Name: "GPU_VENDOR", Value: string(c.gpuVendor)},
 			corev1.EnvVar{Name: "CHECK_MODE", Value: "networking"},
-			corev1.EnvVar{Name: "RDMA_MODE", Value: c.cfg.Jobs.RDMAType},
+			corev1.EnvVar{Name: "RDMA_TYPE", Value: c.cfg.Jobs.RDMAType},
 		)
 
 		_, err := c.client.BatchV1().Jobs(c.opts.Namespace).Create(ctx, job, metav1.CreateOptions{})

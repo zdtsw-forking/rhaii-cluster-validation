@@ -98,13 +98,13 @@ type NodeReport struct {
 	Results   []Result  `json:"results,omitempty"`
 }
 
-// NormalizeRDMAMode validates and normalizes an RDMA mode string.
-// Returns the lowercased mode if valid ("ib" or "roce"), empty string
+// NormalizeRDMAType validates and normalizes an RDMA type string.
+// Returns the lowercased type if valid ("ib" or "roce"), empty string
 // for empty input, or empty string for unknown values.
-func NormalizeRDMAMode(mode string) string {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "ib" || mode == "roce" {
-		return mode
+func NormalizeRDMAType(rdmaType string) string {
+	rdmaType = strings.ToLower(strings.TrimSpace(rdmaType))
+	if rdmaType == "ib" || rdmaType == "roce" {
+		return rdmaType
 	}
 	return ""
 }

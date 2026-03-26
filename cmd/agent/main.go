@@ -320,8 +320,8 @@ func newRunCmd() *cobra.Command {
 			}
 
 			if checkMode == CheckModeNetworking || checkMode == CheckModeAll {
-				rdmaMode := checks.NormalizeRDMAMode(os.Getenv("RDMA_MODE"))
-				r.AddCheck(rdma.NewTopologyCheck(nodeName, rdmaMode))
+				rdmaType := checks.NormalizeRDMAType(os.Getenv("RDMA_TYPE"))
+				r.AddCheck(rdma.NewTopologyCheck(nodeName, rdmaType))
 				r.AddCheck(rdma.NewDevicesCheck(nodeName))
 				r.AddCheck(rdma.NewStatusCheck(nodeName))
 			}
