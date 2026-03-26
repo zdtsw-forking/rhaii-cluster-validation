@@ -62,6 +62,12 @@ func (c PlatformConfig) Validate() error {
 	if rt := RDMAType(c.Jobs.RDMAType); rt != "" && rt != RDMATypeIB && rt != RDMATypeRoCE {
 		return fmt.Errorf("invalid jobs.rdma_type %q: must be %q, %q, or empty", c.Jobs.RDMAType, RDMATypeIB, RDMATypeRoCE)
 	}
+	if c.Jobs.RDMA.QPs < 0 {
+		return fmt.Errorf("invalid jobs.rdma.qps %d: must be >= 0", c.Jobs.RDMA.QPs)
+	}
+	if c.Jobs.RDMA.MessageSize < 0 {
+		return fmt.Errorf("invalid jobs.rdma.message_size %d: must be >= 0", c.Jobs.RDMA.MessageSize)
+	}
 	return nil
 }
 

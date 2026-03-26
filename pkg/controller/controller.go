@@ -483,10 +483,12 @@ func (c *Controller) detectAndCreateConfig(ctx context.Context) error {
 	if err == nil {
 		// ConfigMap exists — merge user's overrides on top of detected defaults
 		if existingYAML, ok := existing.Data["platform.yaml"]; ok {
-			// Unmarshal user config on top of detected defaults (only set fields are overridden)
 			if yamlErr := yaml.Unmarshal([]byte(existingYAML), &cfg); yamlErr != nil {
 				fmt.Fprintf(c.output, "  Warning: failed to parse existing ConfigMap YAML: %v\n", yamlErr)
 			}
+		}
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("existing ConfigMap has invalid config: %w", err)
 		}
 		c.cfg = cfg
 		fmt.Fprintf(c.output, "  ConfigMap %s/%s already exists, using existing config (platform: %s)\n",
