@@ -174,21 +174,36 @@ func (r *Runner) RunJob(ctx context.Context, job Job, serverNode string, clientN
 	// Step 5: Collect logs and parse results from client jobs
 	var results []JobResult
 	for _, j := range createdJobs[1:] {
+		clientNode := j.Spec.Template.Spec.NodeSelector["kubernetes.io/hostname"]
+		nodeDesc := fmt.Sprintf("%s → %s", clientNode, serverNode)
+
 		logs, err := r.getJobLogs(ctx, j.Name)
 		if err != nil {
 			fmt.Fprintf(r.output, "  [%s] Warning: failed to get logs from %s: %v\n", job.Name(), j.Name, err)
+			results = append(results, JobResult{
+				JobName: job.Name(),
+				Node:    nodeDesc,
+				Role:    RoleClient,
+				Status:  checks.StatusFail,
+				Message: fmt.Sprintf("failed to get logs: %v", err),
+			})
 			continue
 		}
 
 		result, err := job.ParseResult(logs)
 		if err != nil {
 			fmt.Fprintf(r.output, "  [%s] Warning: failed to parse result from %s: %v\n", job.Name(), j.Name, err)
+			results = append(results, JobResult{
+				JobName: job.Name(),
+				Node:    nodeDesc,
+				Role:    RoleClient,
+				Status:  checks.StatusFail,
+				Message: fmt.Sprintf("failed to parse result: %v", err),
+			})
 			continue
 		}
 
-		// Fill in metadata: show "client → server" for cross-node tests
-		clientNode := j.Spec.Template.Spec.NodeSelector["kubernetes.io/hostname"]
-		result.Node = fmt.Sprintf("%s → %s", clientNode, serverNode)
+		result.Node = nodeDesc
 		result.Role = RoleClient
 		result.JobName = job.Name()
 
