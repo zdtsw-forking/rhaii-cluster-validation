@@ -2,6 +2,8 @@ package config
 
 import (
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestGetConfig_AllPlatforms(t *testing.T) {
@@ -61,6 +63,49 @@ func TestGetConfig_AllPlatforms(t *testing.T) {
 				t.Error("TCPBandwidth: Warn must be > Fail")
 			}
 		})
+	}
+}
+
+func TestPlatformConfigStructureConsistency(t *testing.T) {
+	var reference map[string]any
+	var referencePlatform string
+	referenceAssigned := false
+
+	for platform, filename := range platformFileMap {
+		data, err := platformFS.ReadFile(filename)
+		if err != nil {
+			t.Fatalf("%s: failed to read: %v", platform, err)
+		}
+
+		var raw map[string]any
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("%s: failed to parse: %v", platform, err)
+		}
+
+		if !referenceAssigned {
+			reference = raw
+			referencePlatform = string(platform)
+			referenceAssigned = true
+			continue
+		}
+
+		for key := range raw {
+			if key == "platform" {
+				continue
+			}
+			if _, ok := reference[key]; !ok {
+				t.Errorf("%s has key %q missing from %s", platform, key, referencePlatform)
+			}
+		}
+
+		for key := range reference {
+			if key == "platform" {
+				continue
+			}
+			if _, ok := raw[key]; !ok {
+				t.Errorf("%s missing key %q (present in %s)", platform, key, referencePlatform)
+			}
+		}
 	}
 }
 
