@@ -11,6 +11,12 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 )
 
+// Default RDMA test parameters for saturating high-bandwidth NICs (e.g., 400Gbps ConnectX-7).
+const (
+	DefaultRDMAQPs         = 4
+	DefaultRDMAMessageSize = 1048576 // 1 MiB
+)
+
 // RDMABandwidthJob implements the Job interface for RDMA bandwidth testing via ib_write_bw.
 type RDMABandwidthJob struct {
 	Duration    int                  // test duration in seconds (default 10)
@@ -20,15 +26,19 @@ type RDMABandwidthJob struct {
 	ClientImage string               // optional custom client image (empty = use default)
 	Device      string               // RDMA device (e.g., "mlx5_0"), empty = auto
 	UseCUDA     int                  // GPU ID for GPUDirect RDMA (-1 = disabled)
+	QPs         int                  // number of queue pairs (default 4)
+	MessageSize int                  // message size in bytes (default 1048576 = 1 MiB)
 }
 
 // NewRDMABandwidthJob creates an RDMA bandwidth job.
 func NewRDMABandwidthJob(threshold float64, podCfg *jobrunner.PodConfig) *RDMABandwidthJob {
 	return &RDMABandwidthJob{
-		Duration: 10,
-		Threshold: threshold,
-		PodCfg:   podCfg,
-		UseCUDA:  -1, // disabled by default
+		Duration:    10,
+		Threshold:   threshold,
+		PodCfg:      podCfg,
+		UseCUDA:     -1,
+		QPs:         DefaultRDMAQPs,
+		MessageSize: DefaultRDMAMessageSize,
 	}
 }
 
@@ -79,6 +89,12 @@ func (j *RDMABandwidthJob) SetClientImage(img string) { j.ClientImage = img }
 
 func (j *RDMABandwidthJob) buildArgs() []string {
 	args := []string{"ib_write_bw", "--duration", fmt.Sprintf("%d", j.Duration)}
+	if j.QPs > 0 {
+		args = append(args, "--qp", fmt.Sprintf("%d", j.QPs))
+	}
+	if j.MessageSize > 0 {
+		args = append(args, "--size", fmt.Sprintf("%d", j.MessageSize))
+	}
 	if j.Device != "" {
 		args = append(args, "-d", j.Device)
 	}

@@ -1277,10 +1277,22 @@ func (c *Controller) expandRDMAJobs(ctx context.Context, gpuNodes []string, topo
 		}
 		hasAllDevices := rdmaCount >= len(topo.Pairs)
 
+		// GPUDirect RDMA: request all GPUs so the NVIDIA container runtime
+		// injects CUDA libraries and --use_cuda sees correct GPU indices
+		gpuResourcesAvailable := hasAllDevices && c.gpuResource != "" && topo.GPUCount > 0 && origPodCfg != nil
+		if gpuResourcesAvailable {
+			gpuCountStr := fmt.Sprintf("%d", topo.GPUCount)
+			origPodCfg.ResourceRequests[string(c.gpuResource)] = gpuCountStr
+			origPodCfg.ResourceLimits[string(c.gpuResource)] = gpuCountStr
+		}
+
 		// Collect devices and GPU IDs for WEP
 		var devices []string
 		var gpuIDs []int
 		uniqueDevices := make(map[string]bool)
+
+		cfgQPs := c.cfg.Jobs.RDMA.QPs
+		cfgMsgSize := c.cfg.Jobs.RDMA.MessageSize
 
 		if hasAllDevices {
 			// Requesting all RDMA devices — create one PD job per GPU-NIC pair
@@ -1291,6 +1303,12 @@ func (c *Controller) expandRDMAJobs(ctx context.Context, gpuNodes []string, topo
 				rdmaJob.ClientImage = origClientImg
 				rdmaJob.Device = pair.NIC.Dev
 				rdmaJob.UseCUDA = pair.GPU.ID
+				if cfgQPs > 0 {
+					rdmaJob.QPs = cfgQPs
+				}
+				if cfgMsgSize > 0 {
+					rdmaJob.MessageSize = cfgMsgSize
+				}
 				jobs = append(jobs, rdmaJob)
 				fmt.Fprintf(c.output, "  RDMA PD job: GPU%d ↔ %s (NUMA:%d↔%d)\n", pair.GPU.ID, pair.NIC.Dev, pair.GPU.NUMA, pair.NIC.NUMA)
 
@@ -1306,6 +1324,12 @@ func (c *Controller) expandRDMAJobs(ctx context.Context, gpuNodes []string, topo
 			rdmaJob.PodCfg = origPodCfg
 			rdmaJob.ServerImage = origServerImg
 			rdmaJob.ClientImage = origClientImg
+			if cfgQPs > 0 {
+				rdmaJob.QPs = cfgQPs
+			}
+			if cfgMsgSize > 0 {
+				rdmaJob.MessageSize = cfgMsgSize
+			}
 			// No Device or UseCUDA set — ib_write_bw auto-detects
 			jobs = append(jobs, rdmaJob)
 			fmt.Fprintf(c.output, "  RDMA PD job: auto-detect device (requesting %d RDMA resource)\n", rdmaCount)
@@ -1317,6 +1341,12 @@ func (c *Controller) expandRDMAJobs(ctx context.Context, gpuNodes []string, topo
 			wepJob.PodCfg = origPodCfg
 			wepJob.ServerImage = origServerImg
 			wepJob.ClientImage = origClientImg
+			if cfgQPs > 0 {
+				wepJob.QPs = cfgQPs
+			}
+			if cfgMsgSize > 0 {
+				wepJob.MessageSize = cfgMsgSize
+			}
 			jobs = append(jobs, wepJob)
 			fmt.Fprintf(c.output, "  RDMA WEP job: %d NICs in parallel (%s)\n", len(devices), strings.Join(devices, ", "))
 		} else {
