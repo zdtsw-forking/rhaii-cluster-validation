@@ -93,6 +93,12 @@ func handleEchoConn(conn net.Conn) {
 	buf := make([]byte, 4096)
 
 	for {
+		// Set read deadline to prevent goroutine leak from idle clients
+		if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to set read deadline: %v\n", err)
+			return
+		}
+
 		n, err := conn.Read(buf)
 		if err != nil {
 			if err != io.EOF {
@@ -113,8 +119,9 @@ func handleEchoConn(conn net.Conn) {
 func runTCPLatClient(serverAddr string, duration int) error {
 	addr := net.JoinHostPort(serverAddr, strconv.Itoa(defaultPort))
 
-	// Connect to server
-	conn, err := net.Dial("tcp", addr)
+	// Connect to server with timeout
+	dialer := net.Dialer{Timeout: 10 * time.Second}
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to connect to %s: %w", addr, err)
 	}
@@ -132,6 +139,16 @@ func runTCPLatClient(serverAddr string, duration int) error {
 
 	for time.Now().Before(endTime) {
 		start := time.Now()
+
+		// Set deadline for this iteration (5 seconds or remaining time, whichever is shorter)
+		remaining := time.Until(endTime)
+		deadline := 5 * time.Second
+		if remaining < deadline {
+			deadline = remaining
+		}
+		if err := conn.SetDeadline(time.Now().Add(deadline)); err != nil {
+			return fmt.Errorf("failed to set deadline: %w", err)
+		}
 
 		// Send message
 		_, err := conn.Write(message)
