@@ -5,7 +5,7 @@
 kubectl plugin for validating GPU cluster readiness for AI/ML workloads. Checks GPU hardware, RDMA networking, and cross-node bandwidth.
 
 **Tier 1 (API checks)** will live in [odh-cli](https://github.com/opendatahub-io/odh-cli) (`kubectl odh validate`) — integration planned.
-**Tier 2 (hardware checks)** live here — runs on GPU nodes via privileged DaemonSet.
+**Tier 2 (hardware checks)** live here — runs on GPU nodes via privileged per-node Jobs.
 
 **Epic:** INFERENG-4707
 
@@ -35,7 +35,7 @@ kubectl rhaii-validate all
     +-- Auto-detects GPU vendor (NVIDIA/AMD) from node labels or allocatable
     +-- Auto-detects platform (AKS/EKS/CoreWeave/OCP)
     +-- Creates namespace + RBAC (+ OpenShift SCC if OCP)
-    +-- Deploys DaemonSet (host root mounted at /host)
+    +-- Deploys per-node Jobs (host root mounted at /host)
     |       |
     |       +-- Per-node checks via chroot /host:
     |       |       +-- GPU driver (nvidia-smi / rocm-smi)
@@ -55,12 +55,12 @@ kubectl rhaii-validate all
     |
     +-- Stores JSON report in ConfigMap (persists after cleanup)
     +-- Prints table report with topology
-    +-- Cleans up (DaemonSet + RBAC, ConfigMap + report preserved)
+    +-- Cleans up (Jobs + RBAC, ConfigMap + report preserved)
 ```
 
 ## Two Workload Types
 
-| | DaemonSet (per-node) | Jobs (multi-node) |
+| | Per-node Jobs (hardware checks) | Multi-node Jobs (network tests) |
 |---|---|---|
 | Purpose | Hardware checks | Network tests (bandwidth + latency) |
 | Image | rhaii-validator | tools (iperf3/RDMA), validator (tcp-lat) |
@@ -102,7 +102,7 @@ rhaii-cluster-validation/
 │   ├── jobs.yaml                  # Job container images (embedded via //go:embed)
 │   └── embed.go
 ├── deploy/
-│   ├── daemonset.yaml             # DaemonSet template (host root at /host, hostPID)
+│   ├── node-check-job.yaml        # Per-node Job template (host root at /host, hostPID)
 │   └── rbac.yaml                  # RBAC (SCC added dynamically for OCP)
 ├── Dockerfile                     # UBI9 + util-linux (chroot)
 └── Makefile
@@ -215,7 +215,7 @@ make test               # Run unit tests
 - `apierrors.IsNotFound()` for K8s errors (not string matching)
 - Deploy manifests embedded via `//go:embed`
 - Binary name `rhaii-validator`, kubectl plugin name `kubectl-rhaii_validate`
-- `run` subcommand is hidden (internal, used by DaemonSet)
+- `run` subcommand is hidden (internal, used by per-node Jobs)
 
 ## Known TODOs
 

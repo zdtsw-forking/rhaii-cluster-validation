@@ -21,7 +21,7 @@ kubectl edit cm rhaii-validate-config -n rhaii-validation
 ```yaml
 platform: OCP                        # auto-detected
 
-agent:                               # DaemonSet agent pods (GPU/RDMA checks)
+agent:                               # Per-node check Job pods (GPU/RDMA checks)
   requests:
     cpu: "500m"
     memory: "512Mi"
