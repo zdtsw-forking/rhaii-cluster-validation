@@ -67,7 +67,7 @@ make push IMG=quay.io/{user}/rhaii-validator:dev
 ### Deploy and collect results
 
 ```bash
-# Deploy RBAC + DaemonSet
+# Deploy RBAC + per-node Jobs
 make run IMG=quay.io/{user}/rhaii-validator:dev
 
 # Check pod status
@@ -80,7 +80,7 @@ make logs
 make clean
 ```
 
-### Test on a single GPU node (without DaemonSet)
+### Test on a single GPU node (without deploying Jobs)
 
 ```bash
 GPU_NODE=$(kubectl get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.name}')

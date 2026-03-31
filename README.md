@@ -2,6 +2,17 @@
 
 kubectl plugin for validating GPU cluster readiness for AI/ML workloads.
 
+Runs preflight checks on GPU clusters before deploying inference workloads. Validates GPU hardware (drivers, ECC errors, GPU-NIC topology), RDMA connectivity, and cross-node network bandwidth. Auto-detects GPU vendor (NVIDIA/AMD), platform (AKS, EKS, CoreWeave, OpenShift), and cluster topology. Produces a pass/fail report with per-node and per-GPU-NIC results.
+
+**What it checks:**
+- GPU driver version and ECC memory errors
+- GPU-NIC NUMA topology (which GPU is closest to which NIC)
+- RDMA device presence and NIC link status
+- TCP bandwidth (iperf3) and latency between node pairs
+- RDMA bandwidth (ib_write_bw) per GPU-NIC pair
+
+**Supported platforms:** AKS, EKS, CoreWeave, OpenShift (auto-detected)
+
 ## Quick Start
 
 ### Option 1: Download Binary (No Build Required)
@@ -267,7 +278,7 @@ Report:
 | GPU nodes with NVIDIA or AMD GPUs | GPU driver, ECC, topology checks | AKS, OCP, CoreWeave |
 | GPU driver installed on nodes | `nvidia-smi` / `rocm-smi` must work on host | All |
 | `nvidia.com/gpu` or `amd.com/gpu` in node allocatable | Auto-discovers GPU nodes | All |
-| Cluster-admin or namespace-admin RBAC | Creates namespace, RBAC, DaemonSet, Jobs | All |
+| Cluster-admin or namespace-admin RBAC | Creates namespace, RBAC, Jobs | All |
 
 ### Required for Networking Tests
 
@@ -299,7 +310,7 @@ Report:
 
 **CoreWeave:**
 - GPU nodes may not have `nvidia.com/gpu.present` label — auto-discovered from node allocatable resources
-- DaemonSet uses hostname affinity instead of label selector
+- Per-node Jobs use hostname affinity instead of label selector
 - RDMA device plugin in `cw-rdma` namespace
 
 **EKS:**
@@ -330,7 +341,7 @@ Report:
 ## Architecture
 
 - GPU vendor (NVIDIA/AMD) auto-detected from node labels or allocatable resources
-- GPU tools run on host via `chroot /host` (privileged DaemonSet)
+- GPU tools run on host via `chroot /host` (privileged per-node Jobs)
 - Bandwidth jobs use ring topology (every node tested as sender + receiver)
 - RDMA tests expanded per GPU-NIC pair using discovered topology
 - RDMA tests skipped if no RDMA resource configured

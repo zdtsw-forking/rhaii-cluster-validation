@@ -8,10 +8,10 @@ This document describes how to import the `rhaii-cluster-validation` packages in
 odh-cli (consumer)                      rhaii-cluster-validation (library)
 ├── cmd/validate/validate.go            ├── pkg/checks/          (Check interface + implementations)
 │   └── imports pkg/controller          ├── pkg/config/          (Platform detection + config)
-│   └── imports pkg/checks              ├── pkg/controller/      (DaemonSet lifecycle + result collection)
+│   └── imports pkg/checks              ├── pkg/controller/      (Per-node job lifecycle + result collection)
 │   └── imports pkg/config              ├── pkg/runner/          (Check execution engine)
 │                                       ├── pkg/annotator/       (Pod annotation status updates)
-│                                       └── deploy/              (Embedded DaemonSet + RBAC YAML)
+│                                       └── deploy/              (Embedded per-node Job template + RBAC YAML)
 ```
 
 ## Step 1: Add the dependency
@@ -46,7 +46,7 @@ func NewCommand() *cobra.Command {
         RunE: func(cmd *cobra.Command, args []string) error {
             ctx := cmd.Context()
 
-            // Controller handles: discover GPU nodes → deploy DaemonSet →
+            // Controller handles: discover GPU nodes → deploy per-node Jobs →
             // wait → collect pod logs → cleanup → print report
             ctrl, err := controller.New(opts, os.Stdout)
             if err != nil {
@@ -191,7 +191,7 @@ There are two kinds of validation checks:
 
 | Type | Scope | Runs as | Example |
 |---|---|---|---|
-| **Per-node check** | Single node | DaemonSet agent pod | GPU driver, ECC, RDMA devices |
+| **Per-node check** | Single node | Per-node Job pod | GPU driver, ECC, RDMA devices |
 | **Multi-node job** | Between nodes | K8s Jobs (server + clients) | iperf3, ib_write_bw, NCCL |
 
 ### Adding a new per-node check
@@ -308,19 +308,19 @@ That's it. The controller automatically:
 | `pkg/checks/rdma` | RDMA device, NIC status checks + ib_write_bw job | Run RDMA checks directly or via agent |
 | `pkg/checks/networking` | TCP bandwidth check + iperf3 job | Run network checks directly or via agent |
 | `pkg/config` | Platform detection, config loading | Auto-detect platform, load thresholds |
-| `pkg/controller` | Full lifecycle: RBAC, DaemonSet, jobs, pod log collection, report | Full `validate --extended` workflow |
+| `pkg/controller` | Full lifecycle: RBAC, per-node jobs, bandwidth jobs, pod log collection, report | Full `validate --extended` workflow |
 | `pkg/runner` | Execute checks, output JSON, return report with failure detection | Run checks in agent mode |
 | `pkg/jobrunner` | Job interface, Runner (server/client lifecycle), PodConfig | Multi-node test orchestration |
 | `pkg/annotator` | Pod annotation updates (`NewWithClient` for DI) | Track agent progress |
-| `deploy` | Embedded DaemonSet + RBAC YAML | Single source of truth for manifests |
+| `deploy` | Embedded per-node Job template + RBAC YAML | Single source of truth for manifests |
 
 ### Key Design Notes
 
-- **`deploy` command is self-contained** — creates RBAC, ConfigMap, DaemonSet, and cleans up everything after collection. No manual `kubectl apply` needed.
+- **`deploy` command is self-contained** — creates RBAC, ConfigMap, per-node Jobs, and cleans up everything after collection. No manual `kubectl apply` needed.
 - **Annotation-based completion** — agents set `rhaii.opendatahub.io/validation-status` annotation (`starting` → `running` → `done`/`error`). Controller watches for `done`/`error`.
 - **Agents block after checks** — `<-ctx.Done()` keeps the container alive so the controller can read logs. Controller cleanup terminates the pods.
 - **Exit codes** — both `run --no-wait` and `deploy` exit non-zero if any check reported FAIL, enabling CI/CD gating.
-- **Embedded manifests** — `deploy/daemonset.yaml` and `deploy/rbac.yaml` are embedded via `//go:embed` and used by the controller. Same files used by `make run` via kubectl. Single source of truth.
+- **Embedded manifests** — `deploy/node-check-job.yaml` and `deploy/rbac.yaml` are embedded via `//go:embed` and used by the controller. Single source of truth.
 - **Testability** — `NewWithClient()` constructors accept injected `kubernetes.Interface` for unit testing with `fake.NewSimpleClientset()`.
 
 ## Testing Integration

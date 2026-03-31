@@ -55,7 +55,7 @@ func main() {
 	rootCmd.AddCommand(newDepsCmd())
 	rootCmd.AddCommand(newCleanCmd())
 
-	// Internal: agent mode (used by DaemonSet pods, not user-facing)
+	// Internal: agent mode (used by per-node Job pods, not user-facing)
 	rootCmd.AddCommand(newRunCmd())
 	rootCmd.AddCommand(newTCPLatServerCmd())
 	rootCmd.AddCommand(newTCPLatClientCmd())
