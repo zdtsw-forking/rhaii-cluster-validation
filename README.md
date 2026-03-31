@@ -32,7 +32,7 @@ kubectl rhaii-validate clean
 ### Option 2: Container Image (No Install)
 
 ```bash
-IMG=quay.io/opendatahub/rhaii-validator:latest
+IMG=ghcr.io/opendatahub-io/rhaii-cluster-validation/odh-rhaii-cluster-validator:latest
 
 # Run GPU checks
 podman run --rm -it \
@@ -207,7 +207,7 @@ PASS: `TCP bandwidth: 94.5 Gbps (threshold: 25 Gbps)`
 WARN: `TCP bandwidth: 15.0 Gbps (below 25 Gbps threshold)`
 FAIL: `TCP bandwidth: 7.6 Gbps (well below 25 Gbps threshold)`
 
-Image: `ghcr.io/llm-d/llm-d-rdma-tools-dev:latest` (from `manifests/image-references/jobs.yaml`)
+Image: `ghcr.io/opendatahub-io/rhaii-cluster-validation/odh-rhaii-validator-tools:latest` (from `manifests/image-references/jobs.yaml`)
 
 ### RDMA Bandwidth (ib_write_bw)
 
@@ -235,7 +235,7 @@ Compares against `thresholds.rdma_bandwidth_pd_gbps` from platform config.
 PASS: `RDMA bandwidth: 195.2 Gbps (threshold: 180 Gbps)`
 FAIL: `RDMA bandwidth: 50.1 Gbps (well below 180 Gbps threshold)`
 
-Image: `ghcr.io/llm-d/llm-d-rdma-tools-dev:latest` (from `manifests/image-references/jobs.yaml`)
+Image: `ghcr.io/opendatahub-io/rhaii-cluster-validation/odh-rhaii-validator-tools:latest` (from `manifests/image-references/jobs.yaml`)
 
 ## Ring Topology
 
@@ -297,7 +297,7 @@ Report:
 | Requirement | Why |
 |-------------|-----|
 | 2+ GPU nodes | Ring topology needs at least 2 nodes |
-| Job container image pullable | `ghcr.io/llm-d/llm-d-rdma-tools-dev:latest` by default |
+| Job container image pullable | `ghcr.io/opendatahub-io/rhaii-cluster-validation/odh-rhaii-validator-tools:latest` by default |
 
 ### Required for RDMA Tests
 

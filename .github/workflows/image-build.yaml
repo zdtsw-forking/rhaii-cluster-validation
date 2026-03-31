@@ -1,0 +1,140 @@
+name: Build and Push Images
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary
+        run: make build
+
+      - name: Run unit tests
+        run: go test ./... -count=1 -race
+
+      - name: Build validator image
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          SHA=${GITHUB_SHA::7}
+          IMAGE="ghcr.io/${OWNER,,}/rhaii-cluster-validation/odh-rhaii-cluster-validator"
+          docker build -f Dockerfile.dev \
+            --build-arg VERSION=${SHA} \
+            --build-arg DEFAULT_IMAGE=${IMAGE}:${SHA} \
+            -t ${IMAGE}:${SHA} \
+            -t ${IMAGE}:latest \
+            .
+
+      - name: Build tools image
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          SHA=${GITHUB_SHA::7}
+          IMAGE="ghcr.io/${OWNER,,}/rhaii-cluster-validation/odh-rhaii-validator-tools"
+          docker build -f tools/Dockerfile.dev \
+            -t ${IMAGE}:${SHA} \
+            -t ${IMAGE}:latest \
+            .
+
+      - name: Run e2e tests
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          IMAGE="ghcr.io/${OWNER,,}/rhaii-cluster-validation/odh-rhaii-cluster-validator"
+          set +e
+          docker run --rm ${IMAGE}:latest run --node-name ci-container 2>stderr.log >stdout.log
+          exit_code=$?
+          set -e
+
+          echo "=== stderr ==="
+          cat stderr.log
+          echo "=== stdout ==="
+          cat stdout.log
+
+          # Fail on panics or runtime errors
+          if grep -qiE '(panic:|runtime error:)' stderr.log; then
+            echo "ERROR: detected panic or runtime error in stderr"
+            exit 1
+          fi
+
+          if [ "$exit_code" -ne 1 ]; then
+            echo "ERROR: expected exit code 1 (check failures), got $exit_code"
+            exit 1
+          fi
+
+          if ! python3 -m json.tool stdout.log > /dev/null 2>&1; then
+            echo "ERROR: stdout is not valid JSON"
+            exit 1
+          fi
+
+          python3 -c "
+          import json, sys
+          report = json.load(open('stdout.log'))
+          assert 'node' in report, 'missing node field'
+          assert 'results' in report, 'missing results field'
+          assert len(report['results']) > 0, 'no results'
+          for r in report['results']:
+              assert r['status'] in ('PASS', 'FAIL', 'WARN', 'SKIP'), f'invalid status: {r[\"status\"]}'
+          print(f'OK: {len(report[\"results\"])} check(s), all statuses valid')
+          "
+
+  push:
+    needs: build-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Login to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        env:
+          ACTOR: ${{ github.actor }}
+        with:
+          registry: ghcr.io
+          username: ${{ env.ACTOR }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push validator image
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          SHA=${GITHUB_SHA::7}
+          IMAGE="ghcr.io/${OWNER,,}/rhaii-cluster-validation/odh-rhaii-cluster-validator"
+          docker build -f Dockerfile.dev \
+            --build-arg VERSION=${SHA} \
+            --build-arg DEFAULT_IMAGE=${IMAGE}:${SHA} \
+            -t ${IMAGE}:${SHA} \
+            -t ${IMAGE}:latest \
+            .
+          docker push ${IMAGE}:${SHA}
+          docker push ${IMAGE}:latest
+
+      - name: Build and push tools image
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          SHA=${GITHUB_SHA::7}
+          IMAGE="ghcr.io/${OWNER,,}/rhaii-cluster-validation/odh-rhaii-validator-tools"
+          docker build -f tools/Dockerfile.dev \
+            -t ${IMAGE}:${SHA} \
+            -t ${IMAGE}:latest \
+            .
+          docker push ${IMAGE}:${SHA}
+          docker push ${IMAGE}:latest

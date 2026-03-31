@@ -10,7 +10,7 @@
 
 # Default image for all jobs (when job-specific image not set)
 images:
-  default: "ghcr.io/llm-d/llm-d-rdma-tools-dev:latest"
+  default: "ghcr.io/opendatahub-io/rhaii-cluster-validation/odh-rhaii-validator-tools:latest"
 
   # Per-job image overrides (empty string = use default)
   jobs:

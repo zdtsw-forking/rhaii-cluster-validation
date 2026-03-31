@@ -59,7 +59,7 @@ pkg/config/platforms/
 ```yaml
 # manifests/image-references/jobs.yaml
 images:
-  default: "ghcr.io/llm-d/llm-d-rdma-tools-dev:latest"
+  default: "ghcr.io/opendatahub-io/rhaii-cluster-validation/odh-rhaii-validator-tools:latest"
   jobs:
     iperf3: ""
     rdma: "mellanox/perftest:latest"    # NEW
@@ -70,13 +70,13 @@ images:
 
 ```bash
 make build
-make container IMG=quay.io/yourorg/agent:v1
+make container IMG=ghcr.io/opendatahub-io/rhaii-cluster-validation/odh-rhaii-cluster-validator:latest
 ```
 
 **Step 3:** Deploy
 
 ```bash
-make deploy IMG=quay.io/yourorg/agent:v1
+make deploy IMG=ghcr.io/opendatahub-io/rhaii-cluster-validation/odh-rhaii-cluster-validator:latest
 ```
 
 Jobs automatically use the new images.

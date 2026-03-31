@@ -29,7 +29,7 @@ const (
 
 var (
 	version      = "dev"
-	defaultImage = "quay.io/opendatahub/rhaii-validator:latest"
+	defaultImage = "ghcr.io/opendatahub-io/rhaii-cluster-validation/odh-rhaii-cluster-validator:latest"
 )
 
 func main() {
