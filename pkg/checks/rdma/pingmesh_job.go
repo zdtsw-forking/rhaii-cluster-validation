@@ -157,15 +157,15 @@ func (j *PingMeshJob) serverScript() []string {
 		sb.WriteString("\nexport -f find_rocev2_gid\n\n")
 	}
 
-	sb.WriteString(fmt.Sprintf("timeout %d bash -c '\nidx=0\n", j.serverTimeout()))
+	fmt.Fprintf(&sb, "timeout %d bash -c '\nidx=0\n", j.serverTimeout())
 	for _, sdev := range j.ServerDevices {
 		if !checks.ValidDeviceName.MatchString(sdev) {
 			continue
 		}
 		gidFlag := j.gidFlagExpr("$sdev")
-		sb.WriteString(fmt.Sprintf("sdev=%s\n", sdev))
-		sb.WriteString(fmt.Sprintf("for cslot in $(seq 0 %d); do\n", len(j.ClientDevices)-1))
-		sb.WriteString(fmt.Sprintf("  ibv_rc_pingpong -d $sdev%s -p $((18515 + idx)) -n %d > /dev/null 2>&1 &\n", gidFlag, j.Iterations))
+		fmt.Fprintf(&sb, "sdev=%s\n", sdev)
+		fmt.Fprintf(&sb, "for cslot in $(seq 0 %d); do\n", len(j.ClientDevices)-1)
+		fmt.Fprintf(&sb, "  ibv_rc_pingpong -d $sdev%s -p $((18515 + idx)) -n %d > /dev/null 2>&1 &\n", gidFlag, j.Iterations)
 		sb.WriteString("  idx=$((idx + 1))\ndone\n")
 	}
 	sb.WriteString("wait\n' > /dev/null 2>&1 || true\n")
@@ -193,33 +193,33 @@ func (j *PingMeshJob) clientScript(serverIP string) []string {
 			if !checks.ValidDeviceName.MatchString(cdev) {
 				continue
 			}
-			if j.needsGIDDiscovery() {
-				// Validate GID before running ibv_rc_pingpong; -1 means discovery failed
-				sb.WriteString(fmt.Sprintf("_gid=$(find_rocev2_gid %s)\n", cdev))
-				sb.WriteString(fmt.Sprintf("if [ \"$_gid\" -eq -1 ]; then\n"))
-				sb.WriteString(fmt.Sprintf("  echo 'no RoCE v2 GID for %s' > /tmp/pm/out_${idx}.txt\n", cdev))
-				sb.WriteString(fmt.Sprintf("  echo '%s:%s:1' >> /tmp/pm/results.txt\n", cdev, sdev))
-				sb.WriteString("else\n")
-				sb.WriteString(fmt.Sprintf(
-					"  timeout %d ibv_rc_pingpong -d %s -g $_gid -p $((18515 + idx)) -n %d %s > /tmp/pm/out_${idx}.txt 2>&1\n",
-					j.Timeout, cdev, j.Iterations, serverIP,
-				))
-				sb.WriteString(fmt.Sprintf("  echo '%s:%s:'$? >> /tmp/pm/results.txt\n", cdev, sdev))
-				sb.WriteString("fi\n")
-			} else {
-				gidFlag := j.gidFlagExpr(cdev)
-				sb.WriteString(fmt.Sprintf(
-					"timeout %d ibv_rc_pingpong -d %s%s -p $((18515 + idx)) -n %d %s > /tmp/pm/out_${idx}.txt 2>&1\n",
-					j.Timeout, cdev, gidFlag, j.Iterations, serverIP,
-				))
-				sb.WriteString(fmt.Sprintf("echo '%s:%s:'$? >> /tmp/pm/results.txt\n", cdev, sdev))
-			}
+		if j.needsGIDDiscovery() {
+			// Validate GID before running ibv_rc_pingpong; -1 means discovery failed
+			fmt.Fprintf(&sb, "_gid=$(find_rocev2_gid %s)\n", cdev)
+			sb.WriteString("if [ \"$_gid\" -eq -1 ]; then\n")
+			fmt.Fprintf(&sb, "  echo 'no RoCE v2 GID for %s' > /tmp/pm/out_${idx}.txt\n", cdev)
+			fmt.Fprintf(&sb, "  echo '%s:%s:1' >> /tmp/pm/results.txt\n", cdev, sdev)
+			sb.WriteString("else\n")
+			fmt.Fprintf(&sb,
+				"  timeout %d ibv_rc_pingpong -d %s -g $_gid -p $((18515 + idx)) -n %d %s > /tmp/pm/out_${idx}.txt 2>&1\n",
+				j.Timeout, cdev, j.Iterations, serverIP,
+			)
+			fmt.Fprintf(&sb, "  echo '%s:%s:'$? >> /tmp/pm/results.txt\n", cdev, sdev)
+			sb.WriteString("fi\n")
+		} else {
+			gidFlag := j.gidFlagExpr(cdev)
+			fmt.Fprintf(&sb,
+				"timeout %d ibv_rc_pingpong -d %s%s -p $((18515 + idx)) -n %d %s > /tmp/pm/out_${idx}.txt 2>&1\n",
+				j.Timeout, cdev, gidFlag, j.Iterations, serverIP,
+			)
+			fmt.Fprintf(&sb, "echo '%s:%s:'$? >> /tmp/pm/results.txt\n", cdev, sdev)
+		}
 			sb.WriteString("idx=$((idx + 1))\n")
 		}
 	}
 
 	// Assemble JSON from results file, wrapped with node names
-	sb.WriteString(fmt.Sprintf(`
+	fmt.Fprintf(&sb, `
 printf '{"server_node":"%s","client_node":"%s","results":['
 first=1
 idx=0
@@ -235,7 +235,7 @@ while IFS=: read -r cdev sdev rc; do
   idx=$((idx + 1))
 done < /tmp/pm/results.txt
 printf ']}'
-`, j.ServerNode, j.ClientNode))
+`, j.ServerNode, j.ClientNode)
 
 	return []string{"bash", "-c", sb.String()}
 }
