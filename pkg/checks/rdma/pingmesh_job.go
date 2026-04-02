@@ -90,8 +90,18 @@ func (j *PingMeshJob) GetClientImage() string    { return j.ClientImage }
 func (j *PingMeshJob) SetServerImage(img string) { j.ServerImage = img }
 func (j *PingMeshJob) SetClientImage(img string) { j.ClientImage = img }
 
+func (j *PingMeshJob) validDeviceCount(devs []string) int {
+	n := 0
+	for _, d := range devs {
+		if checks.ValidDeviceName.MatchString(d) {
+			n++
+		}
+	}
+	return n
+}
+
 func (j *PingMeshJob) serverTimeout() int {
-	tests := len(j.ServerDevices) * len(j.ClientDevices)
+	tests := j.validDeviceCount(j.ServerDevices) * j.validDeviceCount(j.ClientDevices)
 	return tests*j.Timeout + defaultServerBufSec
 }
 
@@ -121,7 +131,7 @@ func gidDiscoveryFunc() string {
 }
 
 // gidFlagExpr returns the bash expression for the -g flag on a per-device basis.
-// For RoCE with auto-discover: "-g $(find_rocev2_gid $dev)"
+// For RoCE with auto-discover: uses find_rocev2_gid with validation
 // For RoCE with fixed index:   "-g N"
 // For IB:                      "" (empty, no flag)
 func (j *PingMeshJob) gidFlagExpr(devVar string) string {
@@ -172,6 +182,8 @@ func (j *PingMeshJob) clientScript(serverIP string) []string {
 		sb.WriteString("\n\n")
 	}
 
+	// Port indices must match between server and client scripts (both iterate
+	// ServerDevices × ClientDevices in the same order with the same ValidDeviceName filter).
 	sb.WriteString("idx=0\n")
 	for _, sdev := range j.ServerDevices {
 		if !checks.ValidDeviceName.MatchString(sdev) {
@@ -181,12 +193,27 @@ func (j *PingMeshJob) clientScript(serverIP string) []string {
 			if !checks.ValidDeviceName.MatchString(cdev) {
 				continue
 			}
-			gidFlag := j.gidFlagExpr(fmt.Sprintf("%s", cdev))
-			sb.WriteString(fmt.Sprintf(
-				"timeout %d ibv_rc_pingpong -d %s%s -p $((18515 + idx)) -n %d %s > /tmp/pm/out_${idx}.txt 2>&1\n",
-				j.Timeout, cdev, gidFlag, j.Iterations, serverIP,
-			))
-			sb.WriteString(fmt.Sprintf("echo '%s:%s:'$? >> /tmp/pm/results.txt\n", cdev, sdev))
+			if j.needsGIDDiscovery() {
+				// Validate GID before running ibv_rc_pingpong; -1 means discovery failed
+				sb.WriteString(fmt.Sprintf("_gid=$(find_rocev2_gid %s)\n", cdev))
+				sb.WriteString(fmt.Sprintf("if [ \"$_gid\" -eq -1 ]; then\n"))
+				sb.WriteString(fmt.Sprintf("  echo 'no RoCE v2 GID for %s' > /tmp/pm/out_${idx}.txt\n", cdev))
+				sb.WriteString(fmt.Sprintf("  echo '%s:%s:1' >> /tmp/pm/results.txt\n", cdev, sdev))
+				sb.WriteString("else\n")
+				sb.WriteString(fmt.Sprintf(
+					"  timeout %d ibv_rc_pingpong -d %s -g $_gid -p $((18515 + idx)) -n %d %s > /tmp/pm/out_${idx}.txt 2>&1\n",
+					j.Timeout, cdev, j.Iterations, serverIP,
+				))
+				sb.WriteString(fmt.Sprintf("  echo '%s:%s:'$? >> /tmp/pm/results.txt\n", cdev, sdev))
+				sb.WriteString("fi\n")
+			} else {
+				gidFlag := j.gidFlagExpr(cdev)
+				sb.WriteString(fmt.Sprintf(
+					"timeout %d ibv_rc_pingpong -d %s%s -p $((18515 + idx)) -n %d %s > /tmp/pm/out_${idx}.txt 2>&1\n",
+					j.Timeout, cdev, gidFlag, j.Iterations, serverIP,
+				))
+				sb.WriteString(fmt.Sprintf("echo '%s:%s:'$? >> /tmp/pm/results.txt\n", cdev, sdev))
+			}
 			sb.WriteString("idx=$((idx + 1))\n")
 		}
 	}
@@ -202,7 +229,7 @@ while IFS=: read -r cdev sdev rc; do
   if [ "$rc" -eq 0 ]; then
     printf '{"src_dev":"%%s","dst_dev":"%%s","pass":true}' "$cdev" "$sdev"
   else
-    err=$(head -c 200 /tmp/pm/out_${idx}.txt 2>/dev/null | tr '"' "'" | tr '\n' ' ')
+    err=$(head -c 200 /tmp/pm/out_${idx}.txt 2>/dev/null | tr '"' "'" | tr '\\' '/' | tr '\n' ' ' | tr -d '\000-\037')
     printf '{"src_dev":"%%s","dst_dev":"%%s","pass":false,"error":"%%s"}' "$cdev" "$sdev" "$err"
   fi
   idx=$((idx + 1))

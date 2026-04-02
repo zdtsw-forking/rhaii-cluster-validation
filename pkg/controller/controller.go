@@ -1482,10 +1482,13 @@ func (c *Controller) classifyPingMeshResults(
 
 	for pair, attempts := range pairResults {
 		nodePairCount++
-		serverTopo := topoMap[pair.Server]
-		clientTopo := topoMap[pair.Client]
+		serverTopo, okS := topoMap[pair.Server]
+		clientTopo, okC := topoMap[pair.Client]
+		if !okS || !okC {
+			fmt.Fprintf(c.output, "  Warning: missing topology for %s or %s in classification, skipping pair\n", pair.Server, pair.Client)
+			continue
+		}
 
-		// Build rail index maps: device name -> rail index (position in Pairs)
 		serverRails := buildRailMap(serverTopo)
 		clientRails := buildRailMap(clientTopo)
 

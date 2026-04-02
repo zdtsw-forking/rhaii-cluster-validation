@@ -111,6 +111,8 @@ func (r *Runner) RunPairwise(ctx context.Context, jobs map[NodePair]Job, maxRetr
 			}
 			activePairs = append(activePairs, pair)
 			wg.Add(1)
+			// Each goroutine receives its own Job from jobMap (no sharing).
+			// SetNameSuffix mutates the job, which is safe because pairs are disjoint per round.
 			go func(p NodePair, j Job, ri int) {
 				defer wg.Done()
 
@@ -195,14 +197,11 @@ func roundRobinSchedule(nodes []string) [][]NodePair {
 		return nil
 	}
 
-	// For round-robin we need an even number; add a "bye" if odd
+	// For round-robin we need an even number; add a "bye" (empty string) if odd
 	working := make([]string, len(nodes))
 	copy(working, nodes)
-	hasBye := false
 	if n%2 != 0 {
 		working = append(working, "")
-		hasBye = true
-		_ = hasBye
 	}
 	m := len(working)
 
