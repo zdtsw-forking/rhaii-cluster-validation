@@ -31,6 +31,7 @@ type Runner struct {
 	timeout   time.Duration
 	output    io.Writer
 	debug     bool
+	quietProgress bool // suppress polling/completion output (used by RunPairwise)
 }
 
 // New creates a new job Runner.
@@ -101,19 +102,34 @@ func (r *Runner) RunPairwise(ctx context.Context, jobs map[NodePair]Job, maxRetr
 	for roundIdx, round := range schedule {
 		fmt.Fprintf(r.output, "\n  --- Round %d/%d (%d parallel pairs) ---\n", roundIdx+1, len(schedule), len(round))
 
+		var activePairs []NodePair
 		var wg sync.WaitGroup
 		for _, pair := range round {
 			job, ok := jobs[pair]
 			if !ok {
 				continue
 			}
+			activePairs = append(activePairs, pair)
 			wg.Add(1)
-			go func(p NodePair, j Job) {
+			go func(p NodePair, j Job, ri int) {
 				defer wg.Done()
-				for attempt := 1; attempt <= maxRetries; attempt++ {
-					fmt.Fprintf(r.output, "  [%s→%s] attempt %d/%d\n", p.Client, p.Server, attempt, maxRetries)
 
-					jr, err := r.RunJob(ctx, j, p.Server, []string{p.Client})
+				qr := &Runner{
+					client:        r.client,
+					namespace:     r.namespace,
+					image:         r.image,
+					timeout:       r.timeout,
+					output:        r.output,
+					debug:         r.debug,
+					quietProgress: true,
+				}
+
+				for attempt := 1; attempt <= maxRetries; attempt++ {
+					if ns, ok := j.(NameSuffixable); ok {
+						ns.SetNameSuffix(fmt.Sprintf("r%da%d", ri+1, attempt))
+					}
+
+					jr, err := qr.RunJob(ctx, j, p.Server, []string{p.Client})
 					if err != nil {
 						mu.Lock()
 						results[p] = append(results[p], JobResult{
@@ -142,9 +158,30 @@ func (r *Runner) RunPairwise(ctx context.Context, jobs map[NodePair]Job, maxRetr
 						break
 					}
 				}
-			}(pair, job)
+			}(pair, job, roundIdx)
 		}
 		wg.Wait()
+
+		// Round summary
+		passed, failed := 0, 0
+		for _, p := range activePairs {
+			mu.Lock()
+			pairResults := results[p]
+			mu.Unlock()
+			pairOK := false
+			for _, jr := range pairResults {
+				if jr.Status == checks.StatusPass {
+					pairOK = true
+					break
+				}
+			}
+			if pairOK {
+				passed++
+			} else {
+				failed++
+			}
+		}
+		fmt.Fprintf(r.output, "  Round %d complete: %d/%d pairs passed\n", roundIdx+1, passed, len(activePairs))
 	}
 
 	return results, nil
@@ -253,13 +290,12 @@ func (r *Runner) RunJob(ctx context.Context, job Job, serverNode string, clientN
 	fmt.Fprintf(r.output, "  [%s] Waiting for server pod IP...\n", job.Name())
 	serverIP, err := r.waitForPodIP(ctx, created.Name)
 	if err != nil {
-		// Try to get pod logs for a better error message
 		if logs, logErr := r.getJobLogs(ctx, created.Name); logErr == nil && logs != "" {
 			return nil, fmt.Errorf("server pod failed: %s", strings.TrimSpace(logs))
 		}
 		return nil, fmt.Errorf("server pod failed to start: %w", err)
 	}
-	fmt.Fprintf(r.output, "  [%s] Server running at %s\n", job.Name(), serverIP)
+	fmt.Fprintf(r.output, "  [%s] Server running at %s (%s)\n", job.Name(), serverNode, serverIP)
 
 	// Give the server process time to start listening.
 	// PodRunning only means the container started, not that the server is ready.
@@ -337,7 +373,9 @@ func (r *Runner) RunJob(ctx context.Context, job Job, serverNode string, clientN
 		results = append(results, *result)
 	}
 
-	fmt.Fprintf(r.output, "  [%s] Collected %d result(s)\n", job.Name(), len(results))
+	if !r.quietProgress {
+		fmt.Fprintf(r.output, "  [%s] Collected %d result(s)\n", job.Name(), len(results))
+	}
 	return results, nil
 }
 
@@ -436,7 +474,9 @@ func (r *Runner) waitForJobs(ctx context.Context, jobs []*batchv1.Job) error {
 					}
 				}
 			}
-			fmt.Fprintf(r.output, "  Jobs completed: %d/%d\n", done, len(jobs))
+			if !r.quietProgress {
+				fmt.Fprintf(r.output, "  Jobs completed: %d/%d\n", done, len(jobs))
+			}
 			if done >= len(jobs) {
 				return nil
 			}

@@ -23,6 +23,9 @@ func BuildJobSpec(name, node, namespace, image string, role Role, podCfg *PodCon
 	var backoffLimit int32 = 0
 
 	jobName := fmt.Sprintf("%s-%s-%s", name, role, node)
+	if podCfg != nil && podCfg.NameSuffix != "" {
+		jobName = fmt.Sprintf("%s-%s", jobName, podCfg.NameSuffix)
+	}
 	if len(jobName) > 63 {
 		h := sha256.Sum256([]byte(jobName))
 		suffix := hex.EncodeToString(h[:3])
