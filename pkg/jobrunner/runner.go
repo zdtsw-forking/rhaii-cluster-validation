@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/opendatahub-io/rhaii-cluster-validation/pkg/checks"
@@ -15,6 +17,26 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// syncWriter wraps an io.Writer with a mutex for concurrent use.
+// Used by RunPairwise so child runners can safely share the parent's output
+// even when it's a non-thread-safe writer like bytes.Buffer (e.g. in tests).
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (sw *syncWriter) Write(p []byte) (int, error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.w.Write(p)
+}
+
+// NodePair identifies a server/client node combination for pairwise testing.
+type NodePair struct {
+	Server string
+	Client string
+}
+
 // Runner orchestrates server/client job lifecycle for multi-node tests.
 type Runner struct {
 	client    kubernetes.Interface
@@ -23,6 +45,7 @@ type Runner struct {
 	timeout   time.Duration
 	output    io.Writer
 	debug     bool
+	quietProgress bool // suppress polling/completion output (used by RunPairwise)
 }
 
 // New creates a new job Runner.
@@ -66,6 +89,167 @@ func (r *Runner) RunStar(ctx context.Context, jobs []Job, serverNode string, cli
 	fmt.Fprintf(r.output, "  Mode: star\n")
 	fmt.Fprintf(r.output, "  Server: %s, Clients: %s\n", serverNode, strings.Join(clientNodes, ", "))
 	return r.runJobsOnPair(ctx, jobs, serverNode, clientNodes)
+}
+
+// RunPairwise runs N-choose-2 node pairs using round-robin tournament scheduling.
+// Disjoint pairs within each round run in parallel. Each pair is retried up to
+// maxRetries total attempts. Returns results keyed by NodePair for caller classification.
+func (r *Runner) RunPairwise(ctx context.Context, jobs map[NodePair]Job, maxRetries int) (map[NodePair][]JobResult, error) {
+	// Extract unique nodes
+	nodeSet := make(map[string]bool)
+	for pair := range jobs {
+		nodeSet[pair.Server] = true
+		nodeSet[pair.Client] = true
+	}
+	nodes := make([]string, 0, len(nodeSet))
+	for n := range nodeSet {
+		nodes = append(nodes, n)
+	}
+	sort.Strings(nodes)
+
+	schedule := roundRobinSchedule(nodes)
+	fmt.Fprintf(r.output, "  Mode: pairwise (%d pairs, %d rounds)\n", len(jobs), len(schedule))
+
+	// Wrap output so concurrent goroutines can write safely, even if the
+	// underlying writer is not thread-safe (e.g. bytes.Buffer in tests).
+	safeOut := &syncWriter{w: r.output}
+
+	results := make(map[NodePair][]JobResult)
+	var mu sync.Mutex
+
+	for roundIdx, round := range schedule {
+		fmt.Fprintf(safeOut, "\n  --- Round %d/%d (%d parallel pairs) ---\n", roundIdx+1, len(schedule), len(round))
+
+		var activePairs []NodePair
+		var wg sync.WaitGroup
+		for _, pair := range round {
+			job, ok := jobs[pair]
+			if !ok {
+				continue
+			}
+			activePairs = append(activePairs, pair)
+			wg.Add(1)
+			// Each goroutine receives its own Job from jobMap (no sharing).
+			// SetNameSuffix mutates the job, which is safe because pairs are disjoint per round.
+			go func(p NodePair, j Job, ri int) {
+				defer wg.Done()
+
+				qr := &Runner{
+					client:        r.client,
+					namespace:     r.namespace,
+					image:         r.image,
+					timeout:       r.timeout,
+					output:        safeOut,
+					debug:         r.debug,
+					quietProgress: true,
+				}
+
+			for attempt := 1; attempt <= maxRetries; attempt++ {
+				if ctx.Err() != nil {
+					break
+				}
+				if ns, ok := j.(NameSuffixable); ok {
+						ns.SetNameSuffix(fmt.Sprintf("r%da%d", ri+1, attempt))
+					}
+
+					jr, err := qr.RunJob(ctx, j, p.Server, []string{p.Client})
+					if err != nil {
+						mu.Lock()
+						results[p] = append(results[p], JobResult{
+							JobName: j.Name(),
+							Node:    fmt.Sprintf("%s → %s", p.Client, p.Server),
+							Role:    RoleClient,
+							Status:  checks.StatusFail,
+							Message: fmt.Sprintf("job failed: %v", err),
+						})
+						mu.Unlock()
+						continue
+					}
+
+					mu.Lock()
+					results[p] = append(results[p], jr...)
+					mu.Unlock()
+
+					allPass := true
+					for _, res := range jr {
+						if res.Status != checks.StatusPass {
+							allPass = false
+							break
+						}
+					}
+					if allPass {
+						break
+					}
+				}
+			}(pair, job, roundIdx)
+		}
+		wg.Wait()
+
+		// Round summary
+		passed, failed := 0, 0
+		for _, p := range activePairs {
+			mu.Lock()
+			pairResults := results[p]
+			mu.Unlock()
+			pairOK := false
+			for _, jr := range pairResults {
+				if jr.Status == checks.StatusPass {
+					pairOK = true
+					break
+				}
+			}
+			if pairOK {
+				passed++
+			} else {
+				failed++
+			}
+		}
+		fmt.Fprintf(safeOut, "  Round %d complete: %d/%d pairs passed\n", roundIdx+1, passed, len(activePairs))
+	}
+
+	return results, nil
+}
+
+// roundRobinSchedule generates a round-robin tournament for N nodes.
+// Returns rounds of disjoint NodePairs. For odd N, one node sits out per round.
+func roundRobinSchedule(nodes []string) [][]NodePair {
+	n := len(nodes)
+	if n < 2 {
+		return nil
+	}
+
+	// For round-robin we need an even number; add a "bye" (empty string) if odd
+	working := make([]string, len(nodes))
+	copy(working, nodes)
+	if n%2 != 0 {
+		working = append(working, "")
+	}
+	m := len(working)
+
+	var rounds [][]NodePair
+	for round := 0; round < m-1; round++ {
+		var pairs []NodePair
+		for i := 0; i < m/2; i++ {
+			a := working[i]
+			b := working[m-1-i]
+			if a == "" || b == "" {
+				continue
+			}
+			// Consistent ordering: lexicographically smaller is Server
+			if a > b {
+				a, b = b, a
+			}
+			pairs = append(pairs, NodePair{Server: a, Client: b})
+		}
+		if len(pairs) > 0 {
+			rounds = append(rounds, pairs)
+		}
+		// Rotate: fix first element, rotate rest
+		last := working[m-1]
+		copy(working[2:], working[1:m-1])
+		working[1] = last
+	}
+	return rounds
 }
 
 // runJobsOnPair runs all jobs for a single server/client pair.
@@ -126,13 +310,12 @@ func (r *Runner) RunJob(ctx context.Context, job Job, serverNode string, clientN
 	fmt.Fprintf(r.output, "  [%s] Waiting for server pod IP...\n", job.Name())
 	serverIP, err := r.waitForPodIP(ctx, created.Name)
 	if err != nil {
-		// Try to get pod logs for a better error message
 		if logs, logErr := r.getJobLogs(ctx, created.Name); logErr == nil && logs != "" {
 			return nil, fmt.Errorf("server pod failed: %s", strings.TrimSpace(logs))
 		}
 		return nil, fmt.Errorf("server pod failed to start: %w", err)
 	}
-	fmt.Fprintf(r.output, "  [%s] Server running at %s\n", job.Name(), serverIP)
+	fmt.Fprintf(r.output, "  [%s] Server running at %s (%s)\n", job.Name(), serverNode, serverIP)
 
 	// Give the server process time to start listening.
 	// PodRunning only means the container started, not that the server is ready.
@@ -210,7 +393,9 @@ func (r *Runner) RunJob(ctx context.Context, job Job, serverNode string, clientN
 		results = append(results, *result)
 	}
 
-	fmt.Fprintf(r.output, "  [%s] Collected %d result(s)\n", job.Name(), len(results))
+	if !r.quietProgress {
+		fmt.Fprintf(r.output, "  [%s] Collected %d result(s)\n", job.Name(), len(results))
+	}
 	return results, nil
 }
 
@@ -309,7 +494,9 @@ func (r *Runner) waitForJobs(ctx context.Context, jobs []*batchv1.Job) error {
 					}
 				}
 			}
-			fmt.Fprintf(r.output, "  Jobs completed: %d/%d\n", done, len(jobs))
+			if !r.quietProgress {
+				fmt.Fprintf(r.output, "  Jobs completed: %d/%d\n", done, len(jobs))
+			}
 			if done >= len(jobs) {
 				return nil
 			}
