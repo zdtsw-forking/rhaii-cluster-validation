@@ -235,6 +235,10 @@ func (c *Controller) storeReport(ctx context.Context, reports []checks.NodeRepor
 				if r.Pingmesh == nil && old.Pingmesh != nil {
 					r.Pingmesh = old.Pingmesh
 				}
+				// Recompute summary from merged data so preserved FAILs/WARNs are reflected
+				pass, warn, fail, skip = countStatuses(r.ClusterChecks, r.Nodes, r.JobResults)
+				r.Summary = map[string]int{"pass": pass, "warn": warn, "fail": fail, "skip": skip}
+				r.Status = readinessStatus(fail, warn)
 			}
 		}
 	}
@@ -540,6 +544,10 @@ func (c *Controller) Run(ctx context.Context) error {
 				pmNetReports = stored
 				fmt.Fprintf(c.output, "  Loaded topology for %d node(s) from stored report\n", len(stored))
 			}
+		} else if !topologyCoversAllNodes(pmNetReports, gpuNodes) {
+			fmt.Fprintf(c.output, "  Warning: in-session topology incomplete for all GPU nodes, skipping pingmesh\n")
+			fmt.Fprintln(c.output, "  Hint: run 'kubectl rhaii-validate net-checks' on all GPU nodes first")
+			pmNetReports = nil
 		}
 		if len(pmNetReports) > 0 {
 			fmt.Fprintln(c.output, "[Step 7b] Running RDMA connectivity mesh (pingmesh)...")
@@ -1377,8 +1385,15 @@ func (c *Controller) runPingMesh(ctx context.Context, gpuNodes []string, netRepo
 				fmt.Fprintf(c.output, "  Warning: NIC count mismatch: %s has %d, %s has %d\n", nodeA, len(devsA), nodeB, len(devsB))
 			}
 
-			pair := jobrunner.NodePair{Server: nodeA, Client: nodeB}
-			pmJob := rdma.NewPingMeshJob(nodeA, nodeB, devsA, devsB, rdmaType, gidIndex, iterations, timeout)
+			// Canonicalize pair to match roundRobinSchedule ordering (lex-smaller = Server)
+			serverNode, clientNode := nodeA, nodeB
+			serverDevs, clientDevs := devsA, devsB
+			if serverNode > clientNode {
+				serverNode, clientNode = clientNode, serverNode
+				serverDevs, clientDevs = clientDevs, serverDevs
+			}
+			pair := jobrunner.NodePair{Server: serverNode, Client: clientNode}
+			pmJob := rdma.NewPingMeshJob(serverNode, clientNode, serverDevs, clientDevs, rdmaType, gidIndex, iterations, timeout)
 			pmJob.SetPodConfig(rdmaCfg)
 			pmJob.SetServerImage(toolsImage)
 			pmJob.SetClientImage(toolsImage)
@@ -1679,6 +1694,17 @@ func mergeNodeReports(reportSets ...[]checks.NodeReport) []checks.NodeReport {
 		merged = append(merged, *byNode[name])
 	}
 	return merged
+}
+
+// topologyCoversAllNodes returns true if every node in gpuNodes has topology data in reports.
+func topologyCoversAllNodes(reports []checks.NodeReport, gpuNodes []string) bool {
+	topoMap := buildTopologyMap(reports)
+	for _, n := range gpuNodes {
+		if _, ok := topoMap[n]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // buildTopologyMap extracts topology from node reports, keyed by node name.

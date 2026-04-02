@@ -17,6 +17,20 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// syncWriter wraps an io.Writer with a mutex for concurrent use.
+// Used by RunPairwise so child runners can safely share the parent's output
+// even when it's a non-thread-safe writer like bytes.Buffer (e.g. in tests).
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (sw *syncWriter) Write(p []byte) (int, error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.w.Write(p)
+}
+
 // NodePair identifies a server/client node combination for pairwise testing.
 type NodePair struct {
 	Server string
@@ -96,11 +110,15 @@ func (r *Runner) RunPairwise(ctx context.Context, jobs map[NodePair]Job, maxRetr
 	schedule := roundRobinSchedule(nodes)
 	fmt.Fprintf(r.output, "  Mode: pairwise (%d pairs, %d rounds)\n", len(jobs), len(schedule))
 
+	// Wrap output so concurrent goroutines can write safely, even if the
+	// underlying writer is not thread-safe (e.g. bytes.Buffer in tests).
+	safeOut := &syncWriter{w: r.output}
+
 	results := make(map[NodePair][]JobResult)
 	var mu sync.Mutex
 
 	for roundIdx, round := range schedule {
-		fmt.Fprintf(r.output, "\n  --- Round %d/%d (%d parallel pairs) ---\n", roundIdx+1, len(schedule), len(round))
+		fmt.Fprintf(safeOut, "\n  --- Round %d/%d (%d parallel pairs) ---\n", roundIdx+1, len(schedule), len(round))
 
 		var activePairs []NodePair
 		var wg sync.WaitGroup
@@ -121,13 +139,16 @@ func (r *Runner) RunPairwise(ctx context.Context, jobs map[NodePair]Job, maxRetr
 					namespace:     r.namespace,
 					image:         r.image,
 					timeout:       r.timeout,
-					output:        r.output,
+					output:        safeOut,
 					debug:         r.debug,
 					quietProgress: true,
 				}
 
-				for attempt := 1; attempt <= maxRetries; attempt++ {
-					if ns, ok := j.(NameSuffixable); ok {
+			for attempt := 1; attempt <= maxRetries; attempt++ {
+				if ctx.Err() != nil {
+					break
+				}
+				if ns, ok := j.(NameSuffixable); ok {
 						ns.SetNameSuffix(fmt.Sprintf("r%da%d", ri+1, attempt))
 					}
 
@@ -183,7 +204,7 @@ func (r *Runner) RunPairwise(ctx context.Context, jobs map[NodePair]Job, maxRetr
 				failed++
 			}
 		}
-		fmt.Fprintf(r.output, "  Round %d complete: %d/%d pairs passed\n", roundIdx+1, passed, len(activePairs))
+		fmt.Fprintf(safeOut, "  Round %d complete: %d/%d pairs passed\n", roundIdx+1, passed, len(activePairs))
 	}
 
 	return results, nil

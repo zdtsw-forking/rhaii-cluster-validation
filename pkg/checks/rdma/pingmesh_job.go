@@ -58,24 +58,36 @@ func (j *PingMeshJob) Name() string { return "pingmesh" }
 
 func (j *PingMeshJob) SetPodConfig(cfg *jobrunner.PodConfig) {
 	if cfg == nil {
-		cfg = &jobrunner.PodConfig{
-			ResourceRequests: make(map[string]string),
-			ResourceLimits:   make(map[string]string),
-		}
+		cfg = &jobrunner.PodConfig{}
 	}
-	if cfg.ResourceLimits == nil {
-		cfg.ResourceLimits = make(map[string]string)
+	// Deep-copy to avoid races when multiple PingMeshJobs share a source PodConfig
+	// (the controller passes the same rdmaCfg to all jobs, and RunPairwise goroutines
+	// later mutate NameSuffix concurrently).
+	copy := &jobrunner.PodConfig{
+		Privileged: true,
+		NameSuffix: cfg.NameSuffix,
 	}
+	copy.ResourceRequests = make(map[string]string, len(cfg.ResourceRequests))
 	for k, v := range cfg.ResourceRequests {
+		copy.ResourceRequests[k] = v
+	}
+	copy.ResourceLimits = make(map[string]string, len(cfg.ResourceLimits))
+	for k, v := range cfg.ResourceLimits {
+		copy.ResourceLimits[k] = v
+	}
+	copy.Annotations = make(map[string]string, len(cfg.Annotations))
+	for k, v := range cfg.Annotations {
+		copy.Annotations[k] = v
+	}
+	for k, v := range copy.ResourceRequests {
 		if k == "cpu" || k == "memory" {
 			continue
 		}
-		if _, ok := cfg.ResourceLimits[k]; !ok {
-			cfg.ResourceLimits[k] = v
+		if _, ok := copy.ResourceLimits[k]; !ok {
+			copy.ResourceLimits[k] = v
 		}
 	}
-	cfg.Privileged = true
-	j.PodCfg = cfg
+	j.PodCfg = copy
 }
 
 func (j *PingMeshJob) SetNameSuffix(suffix string) {
@@ -193,27 +205,27 @@ func (j *PingMeshJob) clientScript(serverIP string) []string {
 			if !checks.ValidDeviceName.MatchString(cdev) {
 				continue
 			}
-		if j.needsGIDDiscovery() {
-			// Validate GID before running ibv_rc_pingpong; -1 means discovery failed
-			fmt.Fprintf(&sb, "_gid=$(find_rocev2_gid %s)\n", cdev)
-			sb.WriteString("if [ \"$_gid\" -eq -1 ]; then\n")
-			fmt.Fprintf(&sb, "  echo 'no RoCE v2 GID for %s' > /tmp/pm/out_${idx}.txt\n", cdev)
-			fmt.Fprintf(&sb, "  echo '%s:%s:1' >> /tmp/pm/results.txt\n", cdev, sdev)
-			sb.WriteString("else\n")
-			fmt.Fprintf(&sb,
-				"  timeout %d ibv_rc_pingpong -d %s -g $_gid -p $((18515 + idx)) -n %d %s > /tmp/pm/out_${idx}.txt 2>&1\n",
-				j.Timeout, cdev, j.Iterations, serverIP,
-			)
-			fmt.Fprintf(&sb, "  echo '%s:%s:'$? >> /tmp/pm/results.txt\n", cdev, sdev)
-			sb.WriteString("fi\n")
-		} else {
-			gidFlag := j.gidFlagExpr(cdev)
-			fmt.Fprintf(&sb,
-				"timeout %d ibv_rc_pingpong -d %s%s -p $((18515 + idx)) -n %d %s > /tmp/pm/out_${idx}.txt 2>&1\n",
-				j.Timeout, cdev, gidFlag, j.Iterations, serverIP,
-			)
-			fmt.Fprintf(&sb, "echo '%s:%s:'$? >> /tmp/pm/results.txt\n", cdev, sdev)
-		}
+			if j.needsGIDDiscovery() {
+				// Validate GID before running ibv_rc_pingpong; -1 means discovery failed
+				fmt.Fprintf(&sb, "_gid=$(find_rocev2_gid %s)\n", cdev)
+				sb.WriteString("if [ \"$_gid\" -eq -1 ]; then\n")
+				fmt.Fprintf(&sb, "  echo 'no RoCE v2 GID for %s' > /tmp/pm/out_${idx}.txt\n", cdev)
+				fmt.Fprintf(&sb, "  echo '%s:%s:1' >> /tmp/pm/results.txt\n", cdev, sdev)
+				sb.WriteString("else\n")
+				fmt.Fprintf(&sb,
+					"  timeout %d ibv_rc_pingpong -d %s -g $_gid -p $((18515 + idx)) -n %d %s > /tmp/pm/out_${idx}.txt 2>&1\n",
+					j.Timeout, cdev, j.Iterations, serverIP,
+				)
+				fmt.Fprintf(&sb, "  echo '%s:%s:'$? >> /tmp/pm/results.txt\n", cdev, sdev)
+				sb.WriteString("fi\n")
+			} else {
+				gidFlag := j.gidFlagExpr(cdev)
+				fmt.Fprintf(&sb,
+					"timeout %d ibv_rc_pingpong -d %s%s -p $((18515 + idx)) -n %d %s > /tmp/pm/out_${idx}.txt 2>&1\n",
+					j.Timeout, cdev, gidFlag, j.Iterations, serverIP,
+				)
+				fmt.Fprintf(&sb, "echo '%s:%s:'$? >> /tmp/pm/results.txt\n", cdev, sdev)
+			}
 			sb.WriteString("idx=$((idx + 1))\n")
 		}
 	}

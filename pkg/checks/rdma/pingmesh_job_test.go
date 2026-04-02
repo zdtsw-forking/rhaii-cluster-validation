@@ -111,12 +111,26 @@ func TestParseResult(t *testing.T) {
 	}
 }
 
-func TestParseResultPreservesNodeNames(t *testing.T) {
+func TestParseResultWrappedFormat(t *testing.T) {
+	// Validates that ParseResult correctly handles the wrapped JSON format
+	// with server_node/client_node fields (node names are consumed during
+	// parsing but not exposed on JobResult — they're used by the controller
+	// for classification via the raw client pod logs).
 	logs := `{"server_node":"gpu-node-1","client_node":"gpu-node-2","results":[{"src_dev":"ibp0","dst_dev":"ibp0","pass":true}]}`
 	j := &PingMeshJob{}
-	_, err := j.ParseResult(logs)
+	result, err := j.ParseResult(logs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	results, ok := result.Details.([]PingMeshPairResult)
+	if !ok {
+		t.Fatalf("Details type = %T, want []PingMeshPairResult", result.Details)
+	}
+	if len(results) != 1 {
+		t.Errorf("result count = %d, want 1", len(results))
+	}
+	if result.Status != checks.StatusPass {
+		t.Errorf("Status = %q, want PASS", result.Status)
 	}
 }
 
