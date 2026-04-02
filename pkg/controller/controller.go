@@ -1728,6 +1728,21 @@ func (c *Controller) loadTopologyFromReport(ctx context.Context, gpuNodes []stri
 		return nil, fmt.Errorf("stored report has no topology data for current GPU nodes")
 	}
 
+	if len(reports) < len(gpuNodes) {
+		var missing []string
+		covered := make(map[string]bool, len(reports))
+		for _, r := range reports {
+			covered[r.Node] = true
+		}
+		for _, n := range gpuNodes {
+			if !covered[n] {
+				missing = append(missing, n)
+			}
+		}
+		return nil, fmt.Errorf("stored report has topology for %d/%d GPU nodes (missing: %s)",
+			len(reports), len(gpuNodes), strings.Join(missing, ", "))
+	}
+
 	return reports, nil
 }
 
