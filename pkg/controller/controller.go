@@ -39,6 +39,19 @@ const (
 	defaultTimeout            = 5 * time.Minute
 )
 
+// CheckMode constants define the validation modes used by both the CLI
+// subcommands and the internal per-node Job pods (via CHECK_MODE env var).
+const (
+	CheckModeGPU           = "gpu"
+	CheckModeNetwork       = "network"
+	CheckModeRDMA          = "rdma"
+	CheckModeRDMANode      = "rdma-node"
+	CheckModeRDMAPing      = "rdma-ping"
+	CheckModeRDMABandwidth = "rdma-bandwidth"
+	CheckModeDeps          = "deps"
+	CheckModeAll           = "all"
+)
+
 // Options configures the controller behavior.
 type Options struct {
 	Kubeconfig   string
@@ -51,7 +64,7 @@ type Options struct {
 	ClientNodes  []string
 	Debug        bool   // Skip cleanup so user can exec into pods for debugging
 	OutputFormat string // "table" (default) or "json"
-	CheckMode    string // "all" (default), "gpu", "networking"
+	CheckMode    string // "all", "gpu", "network", "rdma", "rdma-node", "rdma-ping", "rdma-bandwidth", "deps"
 }
 
 // Controller orchestrates check job deployment, result collection, and cleanup.
@@ -220,7 +233,7 @@ func (c *Controller) storeReport(ctx context.Context, reports []checks.NodeRepor
 	}
 
 	// Merge with existing report: preserve fields this run didn't produce
-	// (e.g. net-ping doesn't produce Nodes/JobResults, net-bandwidth doesn't produce Pingmesh)
+	// (e.g. rdma-ping doesn't produce Nodes/JobResults, rdma-bandwidth doesn't produce Pingmesh)
 	existing, getErr := c.client.CoreV1().ConfigMaps(c.opts.Namespace).Get(ctx, reportCMName, metav1.GetOptions{})
 	if getErr == nil {
 		if prev, ok := existing.Data["report.json"]; ok {
@@ -306,7 +319,7 @@ func (c *Controller) printDebugHelp(ctx context.Context) {
 		fmt.Fprintln(c.output)
 	}
 
-	// List pods from check jobs (GPU + networking)
+	// List pods from check jobs (GPU + RDMA node)
 	allCheckSelector := checkJobLabelKey + " in (" + gpuCheckJobLabelValue + "," + netCheckJobLabelValue + ")"
 	pods, err := c.client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
 		LabelSelector: allCheckSelector,
@@ -442,7 +455,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	}
 
 	// Step 5: Tier 1 checks (CRDs + operator health)
-	if c.opts.CheckMode == "all" || c.opts.CheckMode == "deps" {
+	if c.opts.CheckMode == CheckModeAll || c.opts.CheckMode == CheckModeDeps {
 		fmt.Fprintln(c.output, "[Step 5] Checking required CRDs...")
 		c.clusterResults = c.RunCRDChecks(ctx)
 		for _, r := range c.clusterResults {
@@ -497,7 +510,7 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	// Step 6: Deploy per-node GPU check Jobs
 	var gpuReports []checks.NodeReport
-	needGpuChecks := c.opts.CheckMode == "gpu" || c.opts.CheckMode == "all"
+	needGpuChecks := c.opts.CheckMode == CheckModeGPU || c.opts.CheckMode == CheckModeAll
 	if needGpuChecks {
 		fmt.Fprintln(c.output, "[Step 6] Deploying per-node GPU check Jobs...")
 		if err := c.deployGpuCheckJobs(ctx); err != nil {
@@ -515,19 +528,19 @@ func (c *Controller) Run(ctx context.Context) error {
 		}
 	}
 
-	// Step 7: Deploy per-node networking check Jobs (topology + RDMA)
+	// Step 7: Deploy per-node RDMA node check Jobs (topology + devices + NIC status)
 	var netReports []checks.NodeReport
-	needNetChecks := c.opts.CheckMode == "networking" || c.opts.CheckMode == "net-checks" || c.opts.CheckMode == "all"
+	needNetChecks := c.opts.CheckMode == CheckModeRDMA || c.opts.CheckMode == CheckModeRDMANode || c.opts.CheckMode == CheckModeAll
 	if needNetChecks {
-		fmt.Fprintln(c.output, "[Step 7] Deploying per-node networking check Jobs...")
+		fmt.Fprintln(c.output, "[Step 7] Deploying per-node RDMA node check Jobs...")
 		if err := c.deployNetCheckJobs(ctx); err != nil {
-			return fmt.Errorf("failed to deploy networking check jobs: %w", err)
+			return fmt.Errorf("failed to deploy RDMA node check jobs: %w", err)
 		}
 
-		fmt.Fprintln(c.output, "[Step 7] Waiting for networking check Jobs to complete...")
+		fmt.Fprintln(c.output, "[Step 7] Waiting for RDMA node check Jobs to complete...")
 		netReports, err = c.waitAndCollectNetCheckJobs(ctx)
 		if err != nil {
-			fmt.Fprintf(c.output, "  Warning: networking check collection error: %v\n", err)
+			fmt.Fprintf(c.output, "  Warning: RDMA node check collection error: %v\n", err)
 		}
 
 		if !c.opts.Debug {
@@ -536,22 +549,22 @@ func (c *Controller) Run(ctx context.Context) error {
 	}
 
 	// Step 7b: Run pingmesh RDMA connectivity test
-	needPingMesh := c.opts.CheckMode == "networking" || c.opts.CheckMode == "net-ping" || c.opts.CheckMode == "all"
+	needPingMesh := c.opts.CheckMode == CheckModeRDMA || c.opts.CheckMode == CheckModeRDMAPing || c.opts.CheckMode == CheckModeAll
 	if needPingMesh && len(gpuNodes) >= 2 {
-		// Load topology if net-checks didn't run this session
+		// Load topology if rdma-node didn't run this session
 		pmNetReports := netReports
 		if len(pmNetReports) == 0 {
 			stored, topoErr := c.loadTopologyFromReport(ctx, gpuNodes)
 			if topoErr != nil {
 				fmt.Fprintf(c.output, "  Warning: %v\n", topoErr)
-				fmt.Fprintln(c.output, "  Hint: run 'kubectl rhaii-validate net-checks' first to generate topology")
+				fmt.Fprintln(c.output, "  Hint: run 'kubectl rhaii-validate rdma-node' first to generate topology")
 			} else {
 				pmNetReports = stored
 				fmt.Fprintf(c.output, "  Loaded topology for %d node(s) from stored report\n", len(stored))
 			}
 		} else if !topologyCoversAllNodes(pmNetReports, gpuNodes) {
 			fmt.Fprintf(c.output, "  Warning: in-session topology incomplete for all GPU nodes, skipping pingmesh\n")
-			fmt.Fprintln(c.output, "  Hint: run 'kubectl rhaii-validate net-checks' on all GPU nodes first")
+			fmt.Fprintln(c.output, "  Hint: run 'kubectl rhaii-validate rdma-node' on all GPU nodes first")
 			pmNetReports = nil
 		}
 		if len(pmNetReports) > 0 {
@@ -562,9 +575,9 @@ func (c *Controller) Run(ctx context.Context) error {
 		}
 	}
 
-	// Step 8: Run multi-node bandwidth jobs (using topology from networking reports)
+	// Step 8: Run multi-node bandwidth jobs (using topology from RDMA node reports)
 	var jobResults []jobrunner.JobResult
-	needBandwidth := c.opts.CheckMode == "networking" || c.opts.CheckMode == "net-bandwidth" || c.opts.CheckMode == "all"
+	needBandwidth := c.opts.CheckMode == CheckModeNetwork || c.opts.CheckMode == CheckModeRDMA || c.opts.CheckMode == CheckModeRDMABandwidth || c.opts.CheckMode == CheckModeAll
 	shouldRunBandwidth := needBandwidth && len(c.jobs) > 0 && len(gpuNodes) >= 2
 	if shouldRunBandwidth {
 		// If net checks didn't run this session, load topology from stored report
@@ -572,7 +585,7 @@ func (c *Controller) Run(ctx context.Context) error {
 			stored, topoErr := c.loadTopologyFromReport(ctx, gpuNodes)
 			if topoErr != nil {
 				fmt.Fprintf(c.output, "  Warning: %v\n", topoErr)
-				fmt.Fprintln(c.output, "  Hint: run 'kubectl rhaii-validate net-checks' first to generate topology")
+				fmt.Fprintln(c.output, "  Hint: run 'kubectl rhaii-validate rdma-node' first to generate topology")
 			} else {
 				netReports = stored
 				fmt.Fprintf(c.output, "  Loaded topology for %d node(s) from stored report\n", len(stored))
@@ -587,7 +600,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		jobResults = jr
 	}
 
-	// Merge GPU + networking reports for the combined report
+	// Merge GPU + RDMA node reports for the combined report
 	allReports := mergeNodeReports(gpuReports, netReports)
 
 	// Store report in ConfigMap (persists after cleanup)
@@ -980,7 +993,7 @@ func (c *Controller) deployGpuCheckJobs(ctx context.Context) error {
 
 		container.Env = append(container.Env,
 			corev1.EnvVar{Name: "GPU_VENDOR", Value: string(c.gpuVendor)},
-			corev1.EnvVar{Name: "CHECK_MODE", Value: "gpu"},
+			corev1.EnvVar{Name: "CHECK_MODE", Value: CheckModeGPU},
 		)
 
 		_, err := c.client.BatchV1().Jobs(c.opts.Namespace).Create(ctx, job, metav1.CreateOptions{})
@@ -992,7 +1005,7 @@ func (c *Controller) deployGpuCheckJobs(ctx context.Context) error {
 	return nil
 }
 
-// deployNetCheckJobs creates one Job per GPU node for networking checks
+// deployNetCheckJobs creates one Job per GPU node for RDMA node checks
 // (topology discovery, RDMA device checks, NIC status). Each Job requests
 // GPU resources (for nvidia-smi in topology) plus RDMA resources from the
 // platform-specific jobs config.
@@ -1067,15 +1080,15 @@ func (c *Controller) deployNetCheckJobs(ctx context.Context) error {
 
 		container.Env = append(container.Env,
 			corev1.EnvVar{Name: "GPU_VENDOR", Value: string(c.gpuVendor)},
-			corev1.EnvVar{Name: "CHECK_MODE", Value: "networking"},
+			corev1.EnvVar{Name: "CHECK_MODE", Value: CheckModeRDMANode},
 			corev1.EnvVar{Name: "RDMA_TYPE", Value: c.cfg.Jobs.RDMAType},
 		)
 
 		_, err := c.client.BatchV1().Jobs(c.opts.Namespace).Create(ctx, job, metav1.CreateOptions{})
 		if err != nil {
-			return fmt.Errorf("failed to create networking check job for node %s: %w", nodeName, err)
+			return fmt.Errorf("failed to create RDMA node check job for node %s: %w", nodeName, err)
 		}
-		fmt.Fprintf(c.output, "  Created networking check job %s (node: %s, GPUs: %d)\n", jobName, nodeName, gpuCount)
+		fmt.Fprintf(c.output, "  Created RDMA node check job %s (node: %s, GPUs: %d)\n", jobName, nodeName, gpuCount)
 	}
 	return nil
 }
@@ -1099,11 +1112,11 @@ func (c *Controller) waitAndCollectGpuCheckJobs(ctx context.Context) ([]checks.N
 	return c.waitAndCollectJobsBySelector(ctx, selector, "GPU check")
 }
 
-// waitAndCollectNetCheckJobs polls until all networking check Jobs have completed,
+// waitAndCollectNetCheckJobs polls until all RDMA node check Jobs have completed,
 // then reads the JSON report from each Job's pod logs.
 func (c *Controller) waitAndCollectNetCheckJobs(ctx context.Context) ([]checks.NodeReport, error) {
 	selector := checkJobLabelKey + "=" + netCheckJobLabelValue
-	return c.waitAndCollectJobsBySelector(ctx, selector, "networking check")
+	return c.waitAndCollectJobsBySelector(ctx, selector, "RDMA node check")
 }
 
 // waitAndCollectJobsBySelector is the generic polling loop for check Jobs.
@@ -1683,7 +1696,7 @@ func (c *Controller) storePingMeshFailures(ctx context.Context, failures *rdma.P
 }
 
 // mergeNodeReports combines reports from multiple phases (e.g. GPU checks and
-// networking checks) into a single slice. Reports for the same node are merged
+// RDMA node checks) into a single slice. Reports for the same node are merged
 // by appending results.
 func mergeNodeReports(reportSets ...[]checks.NodeReport) []checks.NodeReport {
 	byNode := make(map[string]*checks.NodeReport)
@@ -2085,7 +2098,7 @@ func (c *Controller) cleanupGpuCheckJobs(ctx context.Context) {
 	c.deleteJobsBySelector(ctx, checkJobLabelKey+"="+gpuCheckJobLabelValue)
 }
 
-// cleanupNetCheckJobs deletes all networking check jobs and waits for them to be fully removed.
+// cleanupNetCheckJobs deletes all RDMA node check jobs and waits for them to be fully removed.
 func (c *Controller) cleanupNetCheckJobs(ctx context.Context) {
 	c.deleteJobsBySelector(ctx, checkJobLabelKey+"="+netCheckJobLabelValue)
 }

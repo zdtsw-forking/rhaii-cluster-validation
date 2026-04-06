@@ -12,14 +12,15 @@ kubectl plugin for validating GPU cluster readiness for AI/ML workloads. Checks 
 ## CLI
 
 ```bash
-kubectl rhaii-validate gpu            # GPU hardware checks (driver, ECC)
-kubectl rhaii-validate net-checks     # Per-node RDMA checks (devices, status, topology)
-kubectl rhaii-validate net-ping       # RDMA connectivity mesh (ibv_rc_pingpong)
-kubectl rhaii-validate net-bandwidth  # Network bandwidth tests (iperf3, tcp-lat, ib_write_bw)
-kubectl rhaii-validate networking     # All networking: net-checks + net-ping + net-bandwidth
-kubectl rhaii-validate deps           # Check operators/CRDs
-kubectl rhaii-validate all            # Everything (deps + gpu + networking)
-kubectl rhaii-validate clean          # Remove all validation resources
+kubectl rhaii-validate gpu              # GPU hardware checks (driver, ECC)
+kubectl rhaii-validate network          # TCP bandwidth + latency tests (iperf3, tcp-lat)
+kubectl rhaii-validate rdma             # All RDMA: rdma-node + rdma-ping + rdma-bandwidth
+kubectl rhaii-validate rdma-node        # Per-node RDMA checks (devices, status, topology)
+kubectl rhaii-validate rdma-ping        # RDMA connectivity mesh (ibv_rc_pingpong)
+kubectl rhaii-validate rdma-bandwidth   # RDMA bandwidth tests (ib_write_bw)
+kubectl rhaii-validate deps             # Check operators/CRDs
+kubectl rhaii-validate all              # Everything (deps + gpu + network + rdma)
+kubectl rhaii-validate clean            # Remove all validation resources
 kubectl rhaii-validate --version
 
 # Flags
@@ -50,7 +51,7 @@ kubectl rhaii-validate all
     |       |
     +-- Collects JSON results from pod logs
     |
-    +-- RDMA connectivity mesh (net-ping, pairwise topology):
+    +-- RDMA connectivity mesh (rdma-ping, pairwise topology):
     |       +-- ibv_rc_pingpong: per-NIC-pair connectivity (tools image)
     |       +-- Rail (same rail index) + cross-rail (different rail index)
     |       +-- RoCEv2: auto-discovers GID index from sysfs
@@ -78,14 +79,14 @@ kubectl rhaii-validate all
 | Image | rhaii-validator | tools (iperf3/RDMA), validator (tcp-lat) |
 | GPU request | None (privileged + chroot) | 1 per pod (auto-detected) |
 | Host access | chroot /host | None (self-contained image) |
-| Checks | `gpu` or `all` mode | `networking` or `all` mode |
+| Checks | `gpu` or `all` mode | `network` / `rdma` or `all` mode |
 | Tools | nvidia-smi, rocm-smi, ibv_devices | iperf3, ib_write_bw, ibv_rc_pingpong, tcp-lat |
 
 ## Project Structure
 
 ```
 rhaii-cluster-validation/
-├── cmd/agent/main.go              # CLI: gpu, networking, all, deps, clean, run (hidden)
+├── cmd/agent/main.go              # CLI: gpu, network, rdma, rdma-node, rdma-ping, rdma-bandwidth, all, deps, clean, run (hidden)
 ├── pkg/
 │   ├── checks/
 │   │   ├── check.go               # Check interface, Result, NodeTopology, NodeReport
@@ -203,8 +204,8 @@ images:
 
 ## Pingmesh (RDMA Connectivity)
 
-`net-ping` tests RDMA data-plane connectivity between all GPU nodes using `ibv_rc_pingpong`.
-It requires topology from a prior `net-checks` run (stored in the report ConfigMap).
+`rdma-ping` tests RDMA data-plane connectivity between all GPU nodes using `ibv_rc_pingpong`.
+It requires topology from a prior `rdma-node` run (stored in the report ConfigMap).
 
 **How it works:**
 - Uses N-choose-2 pairwise scheduling (round-robin tournament) for all GPU node pairs
@@ -224,7 +225,7 @@ It requires topology from a prior `net-checks` run (stored in the report ConfigM
 **Reports:**
 - Summary in main report ConfigMap (`rhaii-validate-report`): `rdma_conn_rail` and `rdma_conn_xrail` status
 - Detailed failures in separate ConfigMap (`rhaii-validate-pingmesh-failures`)
-- Report merging: `net-ping` preserves topology/bandwidth data from previous runs
+- Report merging: `rdma-ping` preserves topology/bandwidth data from previous runs
 
 ## Report Storage
 

@@ -28,12 +28,13 @@ chmod +x kubectl-rhaii_validate
 sudo mv kubectl-rhaii_validate /usr/local/bin/
 
 # Run
-kubectl rhaii-validate gpu            # GPU hardware checks
-kubectl rhaii-validate networking     # Network bandwidth tests
-kubectl rhaii-validate all            # Everything
-kubectl rhaii-validate all --debug    # Keep pods alive for inspection
-kubectl rhaii-validate all -o json    # JSON output
-kubectl rhaii-validate clean          # Cleanup
+kubectl rhaii-validate gpu              # GPU hardware checks
+kubectl rhaii-validate network          # TCP bandwidth + latency tests
+kubectl rhaii-validate rdma             # All RDMA checks + connectivity + bandwidth
+kubectl rhaii-validate all              # Everything (deps + gpu + network + rdma)
+kubectl rhaii-validate all --debug      # Keep pods alive for inspection
+kubectl rhaii-validate all -o json      # JSON output
+kubectl rhaii-validate clean            # Cleanup
 ```
 
 > **macOS users:** `make download` extracts a Linux binary from the container. Use `make install` to build from source instead.
@@ -245,7 +246,7 @@ By default, bandwidth tests use ring topology so every node is tested as both se
 
 Override with star topology:
 ```bash
-kubectl rhaii-validate networking --server-node node-1
+kubectl rhaii-validate rdma --server-node node-1
 ```
 
 ## Report
