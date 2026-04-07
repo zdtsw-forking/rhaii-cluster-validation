@@ -166,7 +166,7 @@ type jsonReport struct {
 }
 
 // countStatuses tallies pass/warn/fail/skip across all result sources.
-func countStatuses(clusterResults []checks.Result, reports []checks.NodeReport, jobResults []jobrunner.JobResult) (pass, warn, fail, skip int) {
+func countStatuses(clusterResults []checks.Result, reports []checks.NodeReport, jobResults []jobrunner.JobResult, pingmesh *rdma.PingMeshReport) (pass, warn, fail, skip int) {
 	for _, r := range clusterResults {
 		switch r.Status {
 		case checks.StatusPass:
@@ -182,6 +182,20 @@ func countStatuses(clusterResults []checks.Result, reports []checks.NodeReport, 
 	for _, report := range reports {
 		for _, r := range report.Results {
 			switch r.Status {
+			case checks.StatusPass:
+				pass++
+			case checks.StatusWarn:
+				warn++
+			case checks.StatusFail:
+				fail++
+			case checks.StatusSkip:
+				skip++
+			}
+		}
+	}
+	if pingmesh != nil {
+		for _, s := range pingmesh.Summary {
+			switch s.Status {
 			case checks.StatusPass:
 				pass++
 			case checks.StatusWarn:
@@ -219,7 +233,7 @@ func readinessStatus(fail, warn int) string {
 
 // storeReport saves the JSON report to a ConfigMap so it persists after cleanup.
 func (c *Controller) storeReport(ctx context.Context, reports []checks.NodeReport, jobResults []jobrunner.JobResult) error {
-	pass, warn, fail, skip := countStatuses(c.clusterResults, reports, jobResults)
+	pass, warn, fail, skip := countStatuses(c.clusterResults, reports, jobResults, c.pingmeshReport)
 
 	r := jsonReport{
 		Platform:      string(c.platform),
@@ -249,7 +263,7 @@ func (c *Controller) storeReport(ctx context.Context, reports []checks.NodeRepor
 					r.Pingmesh = old.Pingmesh
 				}
 				// Recompute summary from merged data so preserved FAILs/WARNs are reflected
-				pass, warn, fail, skip = countStatuses(r.ClusterChecks, r.Nodes, r.JobResults)
+				pass, warn, fail, skip = countStatuses(r.ClusterChecks, r.Nodes, r.JobResults, r.Pingmesh)
 				r.Summary = map[string]int{"pass": pass, "warn": warn, "fail": fail, "skip": skip}
 				r.Status = readinessStatus(fail, warn)
 			}
@@ -1435,19 +1449,6 @@ func (c *Controller) runPingMesh(ctx context.Context, gpuNodes []string, netRepo
 	report, failures := c.classifyPingMeshResults(pairResults, topoMap)
 	c.pingmeshReport = report
 
-	// Append summary checks to cluster results
-	for _, name := range []string{"rdma_conn_rail", "rdma_conn_xrail"} {
-		if summary, ok := report.Summary[name]; ok {
-			c.clusterResults = append(c.clusterResults, checks.Result{
-				Category: "networking_rdma",
-				Name:     name,
-				Node:     "(cluster)",
-				Status:   summary.Status,
-				Message:  summary.Message,
-			})
-		}
-	}
-
 	// Manage detailed failures ConfigMap: update on failure, delete on full success
 	if len(failures.Failures) > 0 {
 		if err := c.storePingMeshFailures(ctx, failures); err != nil {
@@ -2224,6 +2225,16 @@ func (c *Controller) printReport(reports []checks.NodeReport, jobResults []jobru
 		}
 	}
 
+	// Print pingmesh connectivity results (between per-node checks and bandwidth)
+	if c.pingmeshReport != nil {
+		for _, name := range []string{"rdma_conn_rail", "rdma_conn_xrail"} {
+			if s, ok := c.pingmeshReport.Summary[name]; ok {
+				fmt.Fprintf(c.output, "%-20s %-30s %-35s %-8s %s\n",
+					"networking_rdma", name, "(cluster)", s.Status, s.Message)
+			}
+		}
+	}
+
 	// Print job results (bandwidth tests)
 	for _, jr := range jobResults {
 		node := jr.Node
@@ -2234,7 +2245,7 @@ func (c *Controller) printReport(reports []checks.NodeReport, jobResults []jobru
 			"bandwidth", jr.JobName, node, jr.Status, jr.Message)
 	}
 
-	pass, warn, fail, skip := countStatuses(c.clusterResults, reports, jobResults)
+	pass, warn, fail, skip := countStatuses(c.clusterResults, reports, jobResults, c.pingmeshReport)
 
 	fmt.Fprintln(c.output)
 	fmt.Fprintf(c.output, "Summary: %d PASS | %d WARN | %d FAIL | %d SKIP\n", pass, warn, fail, skip)
@@ -2256,7 +2267,7 @@ func (c *Controller) printReport(reports []checks.NodeReport, jobResults []jobru
 }
 
 func (c *Controller) printJSONReport(reports []checks.NodeReport, jobResults []jobrunner.JobResult) bool {
-	pass, warn, fail, skip := countStatuses(c.clusterResults, reports, jobResults)
+	pass, warn, fail, skip := countStatuses(c.clusterResults, reports, jobResults, c.pingmeshReport)
 
 	r := jsonReport{
 		Platform:      string(c.platform),
