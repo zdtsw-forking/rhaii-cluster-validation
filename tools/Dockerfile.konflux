@@ -8,6 +8,9 @@ ARG PERFTEST_TARBALL=perftest-25.10.0-0.128.gd01b183.tar.gz
 # Needed with aipcc image
 USER root
 
+# switch from internal mirrors to public vendor repos
+RUN ${APP_ROOT}/lib/tools/public-repos.sh
+
 # Install build dependencies (no autotools needed — release tarball has pre-generated configure)
 RUN dnf install -y \
     gcc gcc-c++ make diffutils \
@@ -37,6 +40,9 @@ LABEL name="rhoai/odh-rhaii-validator-tools-rhel9" \
 # Root required: RDMA perftest (ib_write_bw, ib_read_bw) and GPU bandwidth tools
 # need direct access to InfiniBand/RoCE devices and CUDA runtime.
 USER root
+
+# switch from internal mirrors to public vendor repos
+RUN ${APP_ROOT}/lib/tools/public-repos.sh
 
 WORKDIR /root
 
